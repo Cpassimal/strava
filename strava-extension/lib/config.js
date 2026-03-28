@@ -5,7 +5,7 @@ export const STRAVA_TOKEN_URL = 'https://www.strava.com/oauth/token';
 export const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 export const SHEET_HEADERS = [
-  'ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC'
+  'ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC', 'Excluded'
 ];
 
 export const ACTIVITY_TYPES = ['Run', 'TrailRun', 'Ride'];

@@ -53,14 +53,18 @@
       <input type="date" id="date-min">
       <span>à</span>
       <input type="date" id="date-max">
+      <span style="border-left:1px solid #eee; height:20px; margin:0 10px;"></span>
+      <strong>Distance :</strong>
+      <label><input type="number" id="dist-min" value="0" min="0" step="1" style="width:60px;"> km min</label>
+      <label><input type="number" id="dist-max" value="" min="0" step="1" style="width:60px;" placeholder="∞"> km max</label>
     </div>
 
     <div class="filter-row bordered">
       <strong>Fenêtre :</strong>
       <div id="window-selector" class="type-selector">
         <span class="type-pill" data-window="day">Jour</span>
-        <span class="type-pill active" data-window="week">Semaine</span>
-        <span class="type-pill" data-window="month">Mois</span>
+        <span class="type-pill" data-window="week">Semaine</span>
+        <span class="type-pill active" data-window="month">Mois</span>
         <span class="type-pill" data-window="quarter">Trimestre</span>
         <span class="type-pill" data-window="half">Semestre</span>
         <span class="type-pill" data-window="year">Année</span>
@@ -68,11 +72,12 @@
     </div>
 
     <div class="filter-row bordered">
-      <strong>Paramètres FC :</strong>
-      <label>FC Repos : <input type="number" id="fc-repos" value="46" min="30" max="100" style="width:60px;"></label>
-      <label>FC Max : <input type="number" id="fc-max" value="200" min="100" max="230" style="width:60px;"></label>
+      <strong>Paramètres personnels :</strong>
+      <label>FC Repos <input type="number" id="fc-repos" value="46" min="30" max="100" style="width:60px;"></label>
+      <label>FC Max <input type="number" id="fc-max" value="200" min="100" max="230" style="width:60px;"></label>
+      <label style="cursor:help;" class="has-tooltip">Facteur D+ <input type="number" id="dplus-factor" value="185" min="50" max="500" step="5" style="width:60px;"><span class="tooltip">Diviseur du D+ dans le score. Plus c'est haut, moins le D+ compte.</span></label>
+      <label style="cursor:help;" class="has-tooltip">Bonus dist. <input type="number" id="dist-bonus-factor" value="110" min="50" max="500" step="5" style="width:60px;"><span class="tooltip">Diviseur du bonus endurance (1 + dist/X). Plus c'est haut, moins les longues distances sont récompensées.</span></label>
       <span style="border-left:1px solid #eee; height:20px; margin:0 10px;"></span>
-      <strong>Affichage :</strong>
       <label><input type="checkbox" id="show-trend"> Tendances</label>
     </div>
   </div>
@@ -82,35 +87,74 @@
     <div class="card kpi-card"><h3>Distance Totale</h3><p id="kpi-dist">0</p></div>
     <div class="card kpi-card"><h3>Dénivelé Total</h3><p id="kpi-elev">0</p></div>
     <div class="card kpi-card"><h3>Volume</h3><p id="kpi-time">0</p></div>
-    <div class="card kpi-card"><h3>Score de Forme (Moy)</h3><p id="kpi-score">0</p></div>
-    <div class="card kpi-card"><h3>FC Moyenne</h3><p id="kpi-hr">0</p></div>
+    <div class="card kpi-card"><h3>Forme (Moy)</h3><p id="kpi-score">0</p></div>
+    <div class="card kpi-card"><h3>Dist. Médiane</h3><p id="kpi-median-dist">0</p></div>
+    <div class="card kpi-card"><h3>Activités</h3><p id="kpi-count">0</p></div>
+    <div class="card kpi-card"><h3>Act. / période</h3><p id="kpi-avg-period">0</p></div>
   </div>
 
-  <!-- Charts -->
-  <div class="chart-section">
-    <div class="card chart-box" id="c1" style="display:none;">
-      <div class="chart-options">
-        <label><input type="checkbox" id="zero-perf"> Min 0</label>
+  <!-- Tabs -->
+  <div class="tab-bar" id="tab-bar" style="display:none;">
+    <button class="tab active" data-tab="charts">Graphiques</button>
+    <button class="tab" data-tab="activities">Activités</button>
+  </div>
+
+  <!-- Tab: Charts -->
+  <div class="tab-content active" id="tab-charts">
+    <div class="chart-section">
+      <div class="card chart-box" id="c1" style="display:none;">
+        <div class="chart-options">
+          <label><input type="checkbox" id="zero-perf"> Min 0</label>
+        </div>
+        <canvas id="perfChart"></canvas>
       </div>
-      <canvas id="perfChart"></canvas>
+      <div class="card chart-box" id="c2" style="display:none;">
+        <div class="chart-options">
+          <label><input type="checkbox" id="zero-dist"> Min 0</label>
+        </div>
+        <canvas id="distElevChart"></canvas>
+      </div>
+      <div class="card chart-box" id="c3" style="display:none;">
+        <div class="chart-options">
+          <label><input type="checkbox" id="zero-vol"> Min 0</label>
+        </div>
+        <canvas id="volumeChart"></canvas>
+      </div>
+      <div class="card chart-box" id="c4" style="display:none;">
+        <div class="chart-options">
+          <label><input type="checkbox" id="zero-hr"> Min 40</label>
+        </div>
+        <canvas id="hrChart"></canvas>
+      </div>
     </div>
-    <div class="card chart-box" id="c2" style="display:none;">
-      <div class="chart-options">
-        <label><input type="checkbox" id="zero-dist"> Min 0</label>
-      </div>
-      <canvas id="distElevChart"></canvas>
+  </div>
+
+  <!-- Tab: Activities list -->
+  <div class="tab-content" id="tab-activities">
+    <div class="exclude-info">
+      Exclure une activité retire sa FC et son score des moyennes (FC Moyenne, Score de Forme) mais conserve ses km, D+ et durée dans les totaux.
     </div>
-    <div class="card chart-box" id="c3" style="display:none;">
-      <div class="chart-options">
-        <label><input type="checkbox" id="zero-vol"> Min 0</label>
-      </div>
-      <canvas id="volumeChart"></canvas>
+    <div style="margin-bottom:12px;">
+      <input type="text" id="activities-search" placeholder="Rechercher une activité..." style="width:100%; padding:10px 14px; border:1px solid #d2d2d7; border-radius:8px; font-size:0.9rem;">
     </div>
-    <div class="card chart-box" id="c4" style="display:none;">
-      <div class="chart-options">
-        <label><input type="checkbox" id="zero-hr"> Min 40</label>
-      </div>
-      <canvas id="hrChart"></canvas>
+    <div class="card" id="activities-table-container">
+      <table class="activities-table">
+        <thead>
+          <tr>
+            <th data-sort="Date">Date</th>
+            <th data-sort="Nom">Nom</th>
+            <th data-sort="Type">Type</th>
+            <th data-sort="Distance_km">Distance</th>
+            <th data-sort="Duree">Durée</th>
+            <th data-sort="D_plus">D+</th>
+            <th data-sort="Moyenne_FC">FC Moy</th>
+            <th data-sort="score">Score</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="activities-tbody"></tbody>
+      </table>
+      <div class="pagination" id="pagination"></div>
     </div>
   </div>
 </div>

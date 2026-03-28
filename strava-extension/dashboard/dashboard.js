@@ -1,7 +1,11 @@
 // ─── State ───
 let rawData = [];
 let charts = {};
-let currentWindow = 'week';
+let currentWindow = 'month';
+let currentTab = 'charts';
+let activitiesPage = 1;
+let activitiesSort = { key: 'Date', dir: 'desc' };
+const ITEMS_PER_PAGE = 30;
 const DateTime = luxon.DateTime;
 
 // ─── Messaging ───
@@ -184,6 +188,7 @@ async function doRefresh() {
 function showUI() {
   document.getElementById('filters-container').style.display = 'flex';
   document.getElementById('kpi-container').style.display = 'grid';
+  document.getElementById('tab-bar').style.display = 'flex';
   document.getElementById('empty-state').style.display = 'none';
   ['c1', 'c2', 'c3', 'c4'].forEach(id => {
     document.getElementById(id).style.display = 'block';
@@ -219,7 +224,7 @@ function getWindowKey(date) {
     case 'quarter': return `${date.year}-T${Math.ceil(date.month / 3)}`;
     case 'half': return `${date.year}-S${date.month <= 6 ? 1 : 2}`;
     case 'year': return `${date.year}`;
-    default: return date.startOf('week').toISODate();
+    default: return date.startOf('month').toFormat('yyyy-MM');
   }
 }
 
@@ -243,16 +248,119 @@ function hmsToHours(str) {
   return isNaN(s) ? 0 : s / 3600;
 }
 
-function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos) {
+function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor) {
   const hrReserve = fcMax - fcRepos;
   if (hrReserve <= 0 || hours <= 0) return 0;
-  const equivDist = dist + (elev / 100);
-  const enduranceBonus = 1 + (dist / 100);
+  const equivDist = dist + (elev / dplusFactor);
+  const enduranceBonus = 1 + (dist / distBonusFactor);
   const equivSpeed = equivDist / hours;
   const hrEffort = (hr - fcRepos) / hrReserve;
-  if (hrEffort <= 0.05) return 0; // FC trop proche de FC repos → score non fiable
+  if (hrEffort <= 0.05) return 0;
   const score = (equivSpeed * enduranceBonus) / hrEffort;
   return isFinite(score) ? score : 0;
+}
+
+let lastFilteredActivities = [];
+
+// ─── Tabs ───
+function switchTab(tabName) {
+  currentTab = tabName;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById(`tab-${tabName}`).classList.add('active');
+}
+
+// ─── Activities Table ───
+function getSortValue(activity, key) {
+  if (key === 'score') return activity.score || 0;
+  if (key === 'Distance_km') return cleanNum(activity.Distance_km);
+  if (key === 'D_plus') return cleanNum(activity.D_plus);
+  if (key === 'Moyenne_FC') return cleanNum(activity.Moyenne_FC);
+  if (key === 'Date') return activity.Date || '';
+  if (key === 'Duree') return hmsToHours(activity.Duree);
+  return (activity[key] || '').toString().toLowerCase();
+}
+
+function sortActivities(list) {
+  const { key, dir } = activitiesSort;
+  return [...list].sort((a, b) => {
+    const va = getSortValue(a, key);
+    const vb = getSortValue(b, key);
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+
+function getSearchFiltered() {
+  const query = (document.getElementById('activities-search')?.value || '').toLowerCase().trim();
+  if (!query) return lastFilteredActivities;
+  return lastFilteredActivities.filter(a =>
+    (a.Nom || '').toLowerCase().includes(query) ||
+    (a.Type || '').toLowerCase().includes(query) ||
+    (a.Date || '').includes(query)
+  );
+}
+
+function renderActivitiesTable() {
+  const sorted = sortActivities(getSearchFiltered());
+  const totalPages = Math.max(1, Math.ceil(sorted.length / ITEMS_PER_PAGE));
+  if (activitiesPage > totalPages) activitiesPage = totalPages;
+  const start = (activitiesPage - 1) * ITEMS_PER_PAGE;
+  const page = sorted.slice(start, start + ITEMS_PER_PAGE);
+
+  const tbody = document.getElementById('activities-tbody');
+  if (sorted.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:#aaa; padding:40px;">Pas de données</td></tr>';
+    document.getElementById('pagination').innerHTML = '';
+    return;
+  }
+
+  tbody.innerHTML = page.map(a => {
+    const date = DateTime.fromISO(a.Date);
+    const dateStr = date.isValid ? date.toFormat('dd/MM/yyyy HH:mm') : a.Date;
+    const score = a.score ? a.score.toFixed(2) : '-';
+    const excluded = a.Excluded;
+    return `<tr class="${excluded ? 'excluded' : ''}">
+      <td>${dateStr}</td>
+      <td><a href="${a.Lien_activite}" target="_blank">${a.Nom}</a></td>
+      <td>${a.Type}</td>
+      <td>${cleanNum(a.Distance_km).toFixed(1)} km</td>
+      <td>${a.Duree}</td>
+      <td>${cleanNum(a.D_plus)} m</td>
+      <td>${cleanNum(a.Moyenne_FC) ? Math.round(cleanNum(a.Moyenne_FC)) + ' bpm' : '-'}</td>
+      <td>${score}</td>
+      <td><button class="btn-exclude ${excluded ? 'is-excluded' : ''}" data-id="${a.ID}" data-excluded="${excluded ? '1' : '0'}">${excluded ? 'Inclure' : 'Exclure'}</button></td>
+    </tr>`;
+  }).join('');
+
+  // Update sort indicators
+  document.querySelectorAll('.activities-table th').forEach(th => {
+    th.classList.remove('sorted-asc', 'sorted-desc');
+    if (th.dataset.sort === activitiesSort.key) {
+      th.classList.add(activitiesSort.dir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+    }
+  });
+
+  // Pagination
+  const pag = document.getElementById('pagination');
+  let html = '';
+  html += `<button ${activitiesPage <= 1 ? 'disabled' : ''} data-page="${activitiesPage - 1}">&laquo;</button>`;
+
+  const maxVisible = 7;
+  let startPage = Math.max(1, activitiesPage - Math.floor(maxVisible / 2));
+  let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+
+  if (startPage > 1) html += `<button data-page="1">1</button><span class="page-info">...</span>`;
+  for (let i = startPage; i <= endPage; i++) {
+    html += `<button data-page="${i}" class="${i === activitiesPage ? 'active' : ''}">${i}</button>`;
+  }
+  if (endPage < totalPages) html += `<span class="page-info">...</span><button data-page="${totalPages}">${totalPages}</button>`;
+
+  html += `<button ${activitiesPage >= totalPages ? 'disabled' : ''} data-page="${activitiesPage + 1}">&raquo;</button>`;
+  html += `<span class="page-info">${sorted.length} activités</span>`;
+  pag.innerHTML = html;
 }
 
 // ─── Dashboard update ───
@@ -260,23 +368,33 @@ function updateDashboard() {
   const minVal = document.getElementById('date-min').value;
   const maxVal = document.getElementById('date-max').value;
 
+  const distMin = parseFloat(document.getElementById('dist-min').value) || 0;
+  const distMaxVal = document.getElementById('dist-max').value;
+  const distMax = distMaxVal ? parseFloat(distMaxVal) : Infinity;
+
   const filtered = rawData.filter(d => {
     const isTypeMatch = [...document.querySelectorAll('#sport-selector .type-pill.active')].map(p => p.textContent).includes(d.Type);
     const activityDate = (d.Date || '').split('T')[0];
-    return isTypeMatch && activityDate >= minVal && activityDate <= maxVal;
+    const dist = cleanNum(d.Distance_km);
+    return isTypeMatch && activityDate >= minVal && activityDate <= maxVal && dist >= distMin && dist <= distMax;
   });
 
   const groupedData = {};
-  let totalDist = 0, totalElev = 0, totalHours = 0, totalPerfScore = 0, countWithScore = 0, totalHR = 0;
+  let totalDist = 0, totalElev = 0, totalHours = 0, totalCount = 0;
+  let totalPerfScore = 0, countForScore = 0, totalHR = 0;
+  const allDistances = [];
 
   const fcMax = parseInt(document.getElementById('fc-max').value) || 200;
   const fcRepos = parseInt(document.getElementById('fc-repos').value) || 46;
+  const dplusFactor = parseInt(document.getElementById('dplus-factor').value) || 185;
+  const distBonusFactor = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
 
   filtered.forEach(d => {
     const dist = cleanNum(d.Distance_km);
     const elev = cleanNum(d.D_plus);
     const hours = hmsToHours(d.Duree);
     const hr = cleanNum(d.Moyenne_FC);
+    const excluded = d.Excluded;
     if (hours === 0) return;
 
     const date = DateTime.fromISO(d.Date);
@@ -284,33 +402,65 @@ function updateDashboard() {
     const key = getWindowKey(date);
 
     if (!groupedData[key]) {
-      groupedData[key] = { dist: 0, elev: 0, hours: 0, count: 0, perfSum: 0, hrSum: 0 };
+      groupedData[key] = { dist: 0, elev: 0, hours: 0, count: 0, perfSum: 0, perfCount: 0, hrSum: 0, hrCount: 0 };
     }
 
-    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos);
-
-    groupedData[key].hrSum += hr;
+    // Always count for totals
     groupedData[key].dist += dist;
     groupedData[key].elev += elev;
     groupedData[key].hours += hours;
     groupedData[key].count += 1;
-    groupedData[key].perfSum += score;
-
     totalDist += dist;
     totalElev += elev;
     totalHours += hours;
-    totalPerfScore += score;
-    totalHR += hr;
-    countWithScore++;
+    totalCount++;
+    allDistances.push(dist);
+
+    // Only count for score/FC if not excluded
+    if (!excluded) {
+      const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
+      groupedData[key].perfSum += score;
+      groupedData[key].perfCount += 1;
+      groupedData[key].hrSum += hr;
+      groupedData[key].hrCount += 1;
+      totalPerfScore += score;
+      totalHR += hr;
+      countForScore++;
+    }
   });
 
+  document.getElementById('kpi-count').textContent = totalCount;
   document.getElementById('kpi-dist').textContent = totalDist.toFixed(1) + ' km';
   document.getElementById('kpi-elev').textContent = Math.round(totalElev) + ' m';
   document.getElementById('kpi-time').textContent = Math.floor(totalHours) + 'h';
-  document.getElementById('kpi-score').textContent = countWithScore > 0 ? (totalPerfScore / countWithScore).toFixed(2) : '0';
-  document.getElementById('kpi-hr').textContent = countWithScore > 0 ? Math.round(totalHR / countWithScore) + ' bpm' : '-';
+  document.getElementById('kpi-score').textContent = countForScore > 0 ? (totalPerfScore / countForScore).toFixed(2) : '0';
+
+  // Median distance
+  allDistances.sort((a, b) => a - b);
+  const median = allDistances.length > 0
+    ? (allDistances.length % 2 === 0
+      ? (allDistances[allDistances.length / 2 - 1] + allDistances[allDistances.length / 2]) / 2
+      : allDistances[Math.floor(allDistances.length / 2)])
+    : 0;
+  document.getElementById('kpi-median-dist').textContent = median > 0 ? median.toFixed(1) + ' km' : '-';
 
   const sortedKeys = Object.keys(groupedData).sort();
+  const nbPeriods = sortedKeys.length;
+  document.getElementById('kpi-avg-period').textContent = nbPeriods > 0
+    ? (totalCount / nbPeriods).toFixed(1)
+    : '-';
+
+  // Build filtered activities with computed score for the table
+  lastFilteredActivities = filtered.map(d => {
+    const dist = cleanNum(d.Distance_km);
+    const elev = cleanNum(d.D_plus);
+    const hours = hmsToHours(d.Duree);
+    const hr = cleanNum(d.Moyenne_FC);
+    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
+    return { ...d, score };
+  });
+  activitiesPage = 1;
+  renderActivitiesTable();
 
   // Toggle "Pas de données" messages
   const chartIds = ['c1', 'c2', 'c3', 'c4'];
@@ -357,7 +507,7 @@ function renderCharts(labels, data) {
   function safeNum(v) { return isFinite(v) ? v : 0; }
 
   // 1. Performance
-  const perfData = labels.map(w => safeNum(data[w].perfSum / data[w].count).toFixed(2));
+  const perfData = labels.map(w => safeNum(data[w].perfCount > 0 ? data[w].perfSum / data[w].perfCount : 0).toFixed(2));
   const perfDatasets = [{
     label: 'Indice de Performance',
     data: perfData,
@@ -456,7 +606,7 @@ function renderCharts(labels, data) {
   });
 
   // 4. FC Moyenne
-  const hrData = labels.map(w => safeNum(data[w].hrSum / data[w].count).toFixed(0));
+  const hrData = labels.map(w => safeNum(data[w].hrCount > 0 ? data[w].hrSum / data[w].hrCount : 0).toFixed(0));
   const hrDatasets = [{
     label: 'FC Moyenne (bpm)', data: hrData,
     borderColor: '#ff3b30', backgroundColor: 'rgba(255, 59, 48, 0.1)',
@@ -490,12 +640,73 @@ document.querySelectorAll('#window-selector .type-pill').forEach(pill => {
 });
 
 // Filter inputs
-['date-min', 'date-max', 'fc-repos', 'fc-max'].forEach(id => {
+['date-min', 'date-max', 'dist-min', 'dist-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'].forEach(id => {
   document.getElementById(id).addEventListener('change', updateDashboard);
 });
 
 ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-hr'].forEach(id => {
   document.getElementById(id).addEventListener('change', updateDashboard);
+});
+
+// Tabs
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+});
+
+// Table sort
+document.querySelectorAll('.activities-table th[data-sort]').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.sort;
+    if (activitiesSort.key === key) {
+      activitiesSort.dir = activitiesSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      activitiesSort = { key, dir: key === 'Date' ? 'desc' : 'asc' };
+    }
+    renderActivitiesTable();
+  });
+});
+
+// Activities search
+document.getElementById('activities-search').addEventListener('input', () => {
+  activitiesPage = 1;
+  renderActivitiesTable();
+});
+
+// Exclude toggle (event delegation)
+document.getElementById('activities-tbody').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.btn-exclude');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const wasExcluded = btn.dataset.excluded === '1';
+  const newExcluded = !wasExcluded;
+
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  const result = await sendMessage({ action: 'toggleExclude', activityId: id, excluded: newExcluded });
+  if (result.error) {
+    alert('Erreur: ' + result.error);
+    btn.disabled = false;
+    btn.textContent = wasExcluded ? 'Inclure' : 'Exclure';
+    return;
+  }
+
+  // Update local state
+  const activity = rawData.find(a => String(a.ID) === String(id));
+  if (activity) activity.Excluded = newExcluded;
+  const filtered = lastFilteredActivities.find(a => String(a.ID) === String(id));
+  if (filtered) filtered.Excluded = newExcluded;
+
+  // Re-render
+  updateDashboard();
+});
+
+// Pagination (event delegation)
+document.getElementById('pagination').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-page]');
+  if (!btn || btn.disabled) return;
+  activitiesPage = parseInt(btn.dataset.page);
+  renderActivitiesTable();
 });
 
 // Top bar buttons

@@ -71,12 +71,19 @@ async function getFirstSheetName(sheetId) {
 }
 
 async function ensureHeaders(sheetId, sheetName) {
-  const range = `'${sheetName}'!A1:I1`;
+  const range = `'${sheetName}'!A1:J1`;
   const data = await sheetsRequest(`/${sheetId}/values/${encodeURIComponent(range)}`);
   if (!data.values || data.values.length === 0 || data.values[0][0] !== 'ID') {
     await sheetsRequest(`/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
       method: 'PUT',
       body: JSON.stringify({ values: [SHEET_HEADERS] })
+    });
+  } else if (!data.values[0][9] || data.values[0][9] !== 'Excluded') {
+    // Migrate: add Excluded header if missing
+    const cellRange = `'${sheetName}'!J1`;
+    await sheetsRequest(`/${sheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=RAW`, {
+      method: 'PUT',
+      body: JSON.stringify({ values: [['Excluded']] })
     });
   }
 }
@@ -87,11 +94,11 @@ export async function readActivities() {
 
   try {
     const sheetName = await getFirstSheetName(sheetId);
-    const range = `'${sheetName}'!A2:I`;
+    const range = `'${sheetName}'!A2:J`;
     const data = await sheetsRequest(`/${sheetId}/values/${encodeURIComponent(range)}?majorDimension=ROWS`);
     if (!data.values || data.values.length === 0) return [];
 
-    return data.values.map(row => ({
+    return data.values.map((row, i) => ({
       ID: row[0] || '',
       Nom: row[1] || '',
       Type: row[2] || '',
@@ -100,7 +107,9 @@ export async function readActivities() {
       Duree: row[5] || '',
       D_plus: row[6] || '',
       Lien_activite: row[7] || '',
-      Moyenne_FC: row[8] || ''
+      Moyenne_FC: row[8] || '',
+      Excluded: row[9] === 'TRUE',
+      _sheetRow: i + 2 // 1-indexed, +1 for header
     }));
   } catch (e) {
     if (e.message.includes('404')) {
@@ -127,13 +136,36 @@ export async function appendActivities(activities) {
     a.Duree,
     String(a.D_plus),
     a.Lien_activite,
-    String(a.Moyenne_FC)
+    String(a.Moyenne_FC),
+    ''
   ]);
 
-  const range = `'${sheetName}'!A:I`;
+  const range = `'${sheetName}'!A:J`;
   await sheetsRequest(`/${sheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
     method: 'POST',
     body: JSON.stringify({ values })
+  });
+}
+
+export async function toggleExclusion(activityId, excluded) {
+  const sheetId = await getSheetId();
+  if (!sheetId) throw new Error('Aucun Google Sheet configuré');
+
+  const sheetName = await getFirstSheetName(sheetId);
+  await ensureHeaders(sheetId, sheetName);
+
+  // Find the row by reading column A (IDs)
+  const idRange = `'${sheetName}'!A2:A`;
+  const data = await sheetsRequest(`/${sheetId}/values/${encodeURIComponent(idRange)}`);
+  if (!data.values) throw new Error('Sheet vide');
+
+  const rowIndex = data.values.findIndex(r => String(r[0]) === String(activityId));
+  if (rowIndex === -1) throw new Error(`Activité ${activityId} non trouvée`);
+
+  const cellRange = `'${sheetName}'!J${rowIndex + 2}`;
+  await sheetsRequest(`/${sheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=RAW`, {
+    method: 'PUT',
+    body: JSON.stringify({ values: [[excluded ? 'TRUE' : '']] })
   });
 }
 

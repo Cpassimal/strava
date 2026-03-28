@@ -1,5 +1,5 @@
 import { authenticate, fetchActivities, disconnectStrava, getStoredTokens } from '../lib/strava.js';
-import { createSpreadsheet, readActivities, appendActivities, getSheetId, disconnectGoogle, linkExistingSheet } from '../lib/sheets.js';
+import { createSpreadsheet, readActivities, appendActivities, getSheetId, disconnectGoogle, linkExistingSheet, toggleExclusion } from '../lib/sheets.js';
 import { STORAGE_KEYS } from '../lib/config.js';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -46,6 +46,10 @@ async function handleMessage(msg) {
 
     case 'loadData':
       return loadData();
+
+    case 'toggleExclude':
+      await toggleExclusion(msg.activityId, msg.excluded);
+      return { ok: true };
 
     default:
       throw new Error(`Action inconnue: ${msg.action}`);
