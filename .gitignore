@@ -1,0 +1,13 @@
+# IDE
+.idea/
+
+# Données personnelles
+toutes_mes_activites.csv
+toutes_mes_activites_tmp.csv
+activity_temp.html
+
+# Extension vendor (téléchargés, pas versionnés)
+strava-extension/vendor/
+
+# Extension icons (générés)
+strava-extension/icons/

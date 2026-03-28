@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <div class="header">
+      <h1>Strava Dashboard</h1>
+    </div>
+
+    <div class="status-section">
+      <div class="status-row">
+        <span class="status-dot" id="strava-dot"></span>
+        <span id="strava-status">Strava: vérification...</span>
+      </div>
+      <div class="status-row">
+        <span class="status-dot" id="google-dot"></span>
+        <span id="google-status">Google Sheets: vérification...</span>
+      </div>
+      <div class="sync-info" id="sync-info"></div>
+    </div>
+
+    <div class="actions">
+      <button id="btn-dashboard" class="btn btn-primary">Ouvrir le Dashboard</button>
+      <button id="btn-refresh" class="btn btn-secondary" disabled>
+        <span id="refresh-label">Rafraîchir</span>
+      </button>
+      <button id="btn-settings" class="btn btn-ghost">Paramètres</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
