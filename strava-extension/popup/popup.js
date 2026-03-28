@@ -2,9 +2,7 @@ const btnDashboard = document.getElementById('btn-dashboard');
 const btnRefresh = document.getElementById('btn-refresh');
 const btnSettings = document.getElementById('btn-settings');
 const stravaDot = document.getElementById('strava-dot');
-const googleDot = document.getElementById('google-dot');
 const stravaStatus = document.getElementById('strava-status');
-const googleStatus = document.getElementById('google-status');
 const syncInfo = document.getElementById('sync-info');
 const refreshLabel = document.getElementById('refresh-label');
 
@@ -21,7 +19,6 @@ async function updateStatus() {
     return;
   }
 
-  // Strava
   if (status.stravaConnected) {
     stravaDot.className = 'status-dot connected';
     const name = status.athlete ? `${status.athlete.firstname} ${status.athlete.lastname}` : '';
@@ -34,25 +31,14 @@ async function updateStatus() {
     stravaStatus.textContent = 'Strava: non configuré';
   }
 
-  // Google
-  if (status.googleSheetId) {
-    googleDot.className = 'status-dot connected';
-    googleStatus.textContent = 'Google Sheets: lié';
-  } else {
-    googleDot.className = 'status-dot disconnected';
-    googleStatus.textContent = 'Google Sheets: non configuré';
-  }
-
-  // Sync
   if (status.lastSync) {
     const date = new Date(status.lastSync);
-    syncInfo.textContent = `Dernière synchro: ${date.toLocaleDateString('fr-FR')} à ${date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    syncInfo.textContent = `Synchro: ${date.toLocaleDateString('fr-FR')} ${date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} — ${status.activityCount} activités`;
   } else {
-    syncInfo.textContent = 'Jamais synchronisé';
+    syncInfo.textContent = status.activityCount > 0 ? `${status.activityCount} activités` : 'Jamais synchronisé';
   }
 
-  // Enable refresh only if both connected
-  btnRefresh.disabled = !(status.stravaConnected && status.googleSheetId);
+  btnRefresh.disabled = !status.stravaConnected;
 }
 
 btnDashboard.addEventListener('click', () => {

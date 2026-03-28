@@ -24,7 +24,6 @@ export async function authenticate() {
   }
 
   const redirectUrl = chrome.identity.getRedirectURL('strava');
-  console.log('[Strava Auth] Redirect URI:', redirectUrl);
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -34,7 +33,6 @@ export async function authenticate() {
     approval_prompt: 'auto'
   });
   const authUrl = `${STRAVA_AUTH_URL}?${params.toString()}`;
-  console.log('[Strava Auth] Auth URL:', authUrl);
 
   const responseUrl = await chrome.identity.launchWebAuthFlow({
     url: authUrl,

@@ -2,21 +2,15 @@
   "manifest_version": 3,
   "name": "Strava Performance Dashboard",
   "version": "1.0.0",
-  "description": "Dashboard d'analyse de performance Strava avec synchronisation Google Sheets",
+  "description": "Dashboard d'analyse de performance Strava",
   "permissions": [
     "identity",
-    "storage"
+    "storage",
+    "unlimitedStorage"
   ],
   "host_permissions": [
-    "https://www.strava.com/*",
-    "https://sheets.googleapis.com/*"
+    "https://www.strava.com/*"
   ],
-  "oauth2": {
-    "client_id": "976007111416-3fd6iuddd03qp70frk1qm0ati7ae6jrg.apps.googleusercontent.com",
-    "scopes": [
-      "https://www.googleapis.com/auth/spreadsheets"
-    ]
-  },
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"

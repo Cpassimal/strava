@@ -7,6 +7,49 @@ let activitiesPage = 1;
 let activitiesSort = { key: 'Date', dir: 'desc' };
 const ITEMS_PER_PAGE = 30;
 const DateTime = luxon.DateTime;
+const USER_CONFIG_KEY = 'user_config';
+
+// ─── User Config ───
+const CONFIG_FIELDS = {
+  inputs: ['date-min', 'dist-min', 'dist-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'],
+  checkboxes: ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge']
+};
+
+function saveUserConfig() {
+  const config = { window: currentWindow, sports: [] };
+  CONFIG_FIELDS.inputs.forEach(id => {
+    config[id] = document.getElementById(id).value;
+  });
+  CONFIG_FIELDS.checkboxes.forEach(id => {
+    config[id] = document.getElementById(id).checked;
+  });
+  config.sports = [...document.querySelectorAll('#sport-selector .type-pill.active')].map(p => p.textContent);
+  chrome.storage.local.set({ [USER_CONFIG_KEY]: config });
+}
+
+async function restoreUserConfig() {
+  const data = await chrome.storage.local.get(USER_CONFIG_KEY);
+  const config = data[USER_CONFIG_KEY];
+  if (!config) return;
+
+  CONFIG_FIELDS.inputs.forEach(id => {
+    if (config[id] !== undefined) document.getElementById(id).value = config[id];
+  });
+  CONFIG_FIELDS.checkboxes.forEach(id => {
+    if (config[id] !== undefined) document.getElementById(id).checked = config[id];
+  });
+  if (config.window) {
+    currentWindow = config.window;
+    document.querySelectorAll('#window-selector .type-pill').forEach(p => {
+      p.classList.toggle('active', p.dataset.window === config.window);
+    });
+  }
+  if (config.sports) {
+    document.querySelectorAll('#sport-selector .type-pill').forEach(p => {
+      if (config.sports.includes(p.textContent)) p.classList.add('active');
+    });
+  }
+}
 
 // ─── Messaging ───
 function sendMessage(msg) {
@@ -38,9 +81,7 @@ async function updateTopBar() {
   if (status.error) return;
 
   const stravaDot = document.getElementById('strava-dot');
-  const googleDot = document.getElementById('google-dot');
   const stravaLabel = document.getElementById('strava-label');
-  const googleLabel = document.getElementById('google-label');
   const syncText = document.getElementById('sync-text');
   const btnRefresh = document.getElementById('btn-refresh');
 
@@ -49,23 +90,18 @@ async function updateTopBar() {
     ? `Strava: ${status.athlete?.firstname || 'connecté'}`
     : 'Strava: non connecté';
 
-  googleDot.className = `dot ${status.googleSheetId ? 'ok' : 'ko'}`;
-  googleLabel.textContent = status.googleSheetId ? 'Sheets: lié' : 'Sheets: non configuré';
-
   if (status.lastSync) {
     const d = new Date(status.lastSync);
-    syncText.textContent = `Synchro: ${d.toLocaleDateString('fr-FR')} ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    syncText.textContent = `Synchro: ${d.toLocaleDateString('fr-FR')} ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} — ${status.activityCount} activités`;
   } else {
-    syncText.textContent = '';
+    syncText.textContent = status.activityCount > 0 ? `${status.activityCount} activités` : '';
   }
 
-  btnRefresh.disabled = !(status.stravaConnected && status.googleSheetId);
+  btnRefresh.disabled = !status.stravaConnected;
 
   // Show empty state or dashboard
   const hasData = rawData.length > 0;
-  const isConfigured = status.stravaConnected && status.googleSheetId;
-
-  if (!hasData && !isConfigured) {
+  if (!hasData && !status.stravaConnected) {
     document.getElementById('empty-state').style.display = 'block';
   } else {
     document.getElementById('empty-state').style.display = 'none';
@@ -78,8 +114,6 @@ async function updateTopBar() {
 function updateSettingsStatus(status) {
   const stravaDot = document.getElementById('settings-strava-dot');
   const stravaText = document.getElementById('settings-strava-text');
-  const googleDot = document.getElementById('settings-google-dot');
-  const googleText = document.getElementById('settings-google-text');
 
   if (status.stravaConnected) {
     stravaDot.className = 'dot ok';
@@ -100,16 +134,7 @@ function updateSettingsStatus(status) {
     document.getElementById('btn-connect-strava').style.display = '';
   }
 
-  if (status.googleSheetId) {
-    googleDot.className = 'dot ok';
-    googleText.textContent = 'Sheet lié';
-    document.getElementById('google-sheet-url').value = `https://docs.google.com/spreadsheets/d/${status.googleSheetId}`;
-    document.getElementById('btn-disconnect-google').style.display = '';
-  } else {
-    googleDot.className = 'dot ko';
-    googleText.textContent = 'Non configuré';
-    document.getElementById('btn-disconnect-google').style.display = 'none';
-  }
+  document.getElementById('data-count-info').textContent = `${status.activityCount} activités stockées localement.`;
 }
 
 // ─── Settings Modal ───
@@ -146,8 +171,10 @@ async function loadData() {
   if (result.activities && result.activities.length > 0) {
     rawData = result.activities.filter(row => row.ID && row.Moyenne_FC && parseFloat(row.Moyenne_FC) > 0);
     initFilters();
+    // Defaults, then override with saved config
     document.getElementById('date-min').value = '2024-01-01';
     document.getElementById('date-max').value = DateTime.now().toISODate();
+    await restoreUserConfig();
     showUI();
     updateDashboard();
   }
@@ -175,8 +202,13 @@ async function doRefresh() {
 
   // Reload data
   if (result.activities) {
+    const activeSports = [...document.querySelectorAll('#sport-selector .type-pill.active')].map(p => p.textContent);
     rawData = result.activities.filter(row => row.ID && row.Moyenne_FC && parseFloat(row.Moyenne_FC) > 0);
     initFilters();
+    // Restore previously active sports
+    document.querySelectorAll('#sport-selector .type-pill').forEach(p => {
+      if (activeSports.includes(p.textContent)) p.classList.add('active');
+    });
     showUI();
     updateDashboard();
   }
@@ -189,6 +221,7 @@ function showUI() {
   document.getElementById('filters-container').style.display = 'flex';
   document.getElementById('kpi-container').style.display = 'grid';
   document.getElementById('tab-bar').style.display = 'flex';
+  document.getElementById('footnotes').style.display = 'block';
   document.getElementById('empty-state').style.display = 'none';
   ['c1', 'c2', 'c3', 'c4'].forEach(id => {
     document.getElementById(id).style.display = 'block';
@@ -206,14 +239,6 @@ function initFilters() {
     pill.onclick = () => { pill.classList.toggle('active'); updateDashboard(); };
     container.appendChild(pill);
   });
-}
-
-// ─── Window selection ───
-function selectWindow(el) {
-  document.querySelectorAll('#window-selector .type-pill').forEach(p => p.classList.remove('active'));
-  el.classList.add('active');
-  currentWindow = el.dataset.window;
-  updateDashboard();
 }
 
 function getWindowKey(date) {
@@ -270,9 +295,17 @@ function switchTab(tabName) {
   document.getElementById(`tab-${tabName}`).classList.add('active');
 }
 
+function selectWindow(el) {
+  document.querySelectorAll('#window-selector .type-pill').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  currentWindow = el.dataset.window;
+  updateDashboard();
+}
+
 // ─── Activities Table ───
 function getSortValue(activity, key) {
   if (key === 'score') return activity.score || 0;
+  if (key === 'charge') return activity.charge || 0;
   if (key === 'Distance_km') return cleanNum(activity.Distance_km);
   if (key === 'D_plus') return cleanNum(activity.D_plus);
   if (key === 'Moyenne_FC') return cleanNum(activity.Moyenne_FC);
@@ -311,7 +344,7 @@ function renderActivitiesTable() {
 
   const tbody = document.getElementById('activities-tbody');
   if (sorted.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:#aaa; padding:40px;">Pas de données</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:#aaa; padding:40px;">Pas de données</td></tr>';
     document.getElementById('pagination').innerHTML = '';
     return;
   }
@@ -330,6 +363,7 @@ function renderActivitiesTable() {
       <td>${cleanNum(a.D_plus)} m</td>
       <td>${cleanNum(a.Moyenne_FC) ? Math.round(cleanNum(a.Moyenne_FC)) + ' bpm' : '-'}</td>
       <td>${score}</td>
+      <td>${a.charge ? a.charge.toFixed(1) : '-'}</td>
       <td><button class="btn-exclude ${excluded ? 'is-excluded' : ''}" data-id="${a.ID}" data-excluded="${excluded ? '1' : '0'}">${excluded ? 'Inclure' : 'Exclure'}</button></td>
     </tr>`;
   }).join('');
@@ -365,6 +399,7 @@ function renderActivitiesTable() {
 
 // ─── Dashboard update ───
 function updateDashboard() {
+  saveUserConfig();
   const minVal = document.getElementById('date-min').value;
   const maxVal = document.getElementById('date-max').value;
 
@@ -381,7 +416,7 @@ function updateDashboard() {
 
   const groupedData = {};
   let totalDist = 0, totalElev = 0, totalHours = 0, totalCount = 0;
-  let totalPerfScore = 0, countForScore = 0, totalHR = 0;
+  let totalPerfScore = 0, countForScore = 0, totalCharge = 0;
   const allDistances = [];
 
   const fcMax = parseInt(document.getElementById('fc-max').value) || 200;
@@ -402,29 +437,31 @@ function updateDashboard() {
     const key = getWindowKey(date);
 
     if (!groupedData[key]) {
-      groupedData[key] = { dist: 0, elev: 0, hours: 0, count: 0, perfSum: 0, perfCount: 0, hrSum: 0, hrCount: 0 };
+      groupedData[key] = { dist: 0, elev: 0, hours: 0, count: 0, perfSum: 0, perfCount: 0, chargeSum: 0 };
     }
 
     // Always count for totals
+    const equivDist = dist + (elev / dplusFactor);
+    const charge = equivDist;
+
     groupedData[key].dist += dist;
     groupedData[key].elev += elev;
     groupedData[key].hours += hours;
     groupedData[key].count += 1;
+    groupedData[key].chargeSum += charge;
+    totalCharge += charge;
     totalDist += dist;
     totalElev += elev;
     totalHours += hours;
     totalCount++;
     allDistances.push(dist);
 
-    // Only count for score/FC if not excluded
+    // Only count for score if not excluded
     if (!excluded) {
       const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
       groupedData[key].perfSum += score;
       groupedData[key].perfCount += 1;
-      groupedData[key].hrSum += hr;
-      groupedData[key].hrCount += 1;
       totalPerfScore += score;
-      totalHR += hr;
       countForScore++;
     }
   });
@@ -434,6 +471,7 @@ function updateDashboard() {
   document.getElementById('kpi-elev').textContent = Math.round(totalElev) + ' m';
   document.getElementById('kpi-time').textContent = Math.floor(totalHours) + 'h';
   document.getElementById('kpi-score').textContent = countForScore > 0 ? (totalPerfScore / countForScore).toFixed(2) : '0';
+  document.getElementById('kpi-avg-charge').textContent = totalCount > 0 ? (totalCharge / totalCount).toFixed(1) : '0';
 
   // Median distance
   allDistances.sort((a, b) => a - b);
@@ -457,7 +495,8 @@ function updateDashboard() {
     const hours = hmsToHours(d.Duree);
     const hr = cleanNum(d.Moyenne_FC);
     const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
-    return { ...d, score };
+    const charge = dist + elev / dplusFactor;
+    return { ...d, score, charge };
   });
   activitiesPage = 1;
   renderActivitiesTable();
@@ -529,7 +568,7 @@ function renderCharts(labels, data) {
     data: { labels, datasets: perfDatasets },
     options: {
       ...options,
-      plugins: { ...options.plugins, title: { display: true, text: 'Performance (Vitesse Équiv. pondérée par FC)' } },
+      plugins: { ...options.plugins, title: { display: true, text: 'Performance par ' + windowLabels[currentWindow] } },
       scales: { y: { min: document.getElementById('zero-perf').checked ? 0 : undefined } }
     }
   });
@@ -605,29 +644,31 @@ function renderCharts(labels, data) {
     }
   });
 
-  // 4. FC Moyenne
-  const hrData = labels.map(w => safeNum(data[w].hrCount > 0 ? data[w].hrSum / data[w].hrCount : 0).toFixed(0));
-  const hrDatasets = [{
-    label: 'FC Moyenne (bpm)', data: hrData,
-    borderColor: '#ff3b30', backgroundColor: 'rgba(255, 59, 48, 0.1)',
-    fill: true, tension: 0.3, spanGaps: true
+  // 4. Charge
+  const chargeData = labels.map(w => data[w].chargeSum.toFixed(1));
+  const chargeDatasets = [{
+    label: 'Charge',
+    data: chargeData,
+    borderColor: '#ff9500',
+    backgroundColor: 'rgba(255, 149, 0, 0.15)',
+    fill: true, tension: 0.3
   }];
   if (showTrend) {
-    hrDatasets.push({
+    chargeDatasets.push({
       label: 'Tendance',
-      data: getMovingAverage(hrData),
-      borderColor: 'rgba(255, 59, 48, 0.5)',
+      data: getMovingAverage(chargeData),
+      borderColor: 'rgba(255, 149, 0, 0.5)',
       borderDash: [5, 5], pointRadius: 0, fill: false, tension: 0.3
     });
   }
 
-  charts.hr = new Chart(document.getElementById('hrChart'), {
+  charts.charge = new Chart(document.getElementById('chargeChart'), {
     type: 'line',
-    data: { labels, datasets: hrDatasets },
+    data: { labels, datasets: chargeDatasets },
     options: {
       ...options,
-      plugins: { ...options.plugins, title: { display: true, text: 'Évolution Fréquence Cardiaque' } },
-      scales: { y: { min: document.getElementById('zero-hr').checked ? 40 : undefined } }
+      plugins: { ...options.plugins, title: { display: true, text: 'Charge par ' + windowLabels[currentWindow] } },
+      scales: { y: { min: document.getElementById('zero-charge').checked ? 0 : undefined } }
     }
   });
 }
@@ -644,7 +685,7 @@ document.querySelectorAll('#window-selector .type-pill').forEach(pill => {
   document.getElementById(id).addEventListener('change', updateDashboard);
 });
 
-['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-hr'].forEach(id => {
+['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge'].forEach(id => {
   document.getElementById(id).addEventListener('change', updateDashboard);
 });
 
@@ -755,31 +796,61 @@ document.getElementById('btn-disconnect-strava').addEventListener('click', async
   updateTopBar();
 });
 
-// Google settings
-function extractSheetId(input) {
-  // Accept full URL or raw ID
-  const match = input.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-  if (match) return match[1];
-  // Fallback: treat as raw ID if it looks like one
-  if (/^[a-zA-Z0-9_-]{20,}$/.test(input)) return input;
-  return null;
-}
-
-document.getElementById('btn-link-sheet').addEventListener('click', async () => {
-  const raw = document.getElementById('google-sheet-url').value.trim();
-  if (!raw) { alert('Collez le lien de votre Google Sheet'); return; }
-  const sheetId = extractSheetId(raw);
-  if (!sheetId) { alert('Lien invalide. Collez l\'URL complète du Google Sheet.'); return; }
-  showLoading('Vérification...');
-  const result = await sendMessage({ action: 'googleLinkSheet', sheetId });
-  hideLoading();
-  if (result.error) { alert('Erreur: ' + result.error); return; }
-  alert('Sheet lié!');
-  updateTopBar();
+// Data management
+document.getElementById('btn-export-csv').addEventListener('click', async () => {
+  const result = await sendMessage({ action: 'loadData' });
+  if (!result.activities || result.activities.length === 0) { alert('Aucune donnée à exporter'); return; }
+  const headers = ['ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC', 'Excluded'];
+  const csvRows = [headers.join(',')];
+  result.activities.forEach(a => {
+    csvRows.push([
+      a.ID, `"${(a.Nom || '').replace(/"/g, '""')}"`, a.Type, a.Date,
+      a.Distance_km, a.Duree, a.D_plus, a.Lien_activite, a.Moyenne_FC,
+      a.Excluded ? 'TRUE' : ''
+    ].join(','));
+  });
+  const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `strava_activities_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 });
 
-document.getElementById('btn-disconnect-google').addEventListener('click', async () => {
-  await sendMessage({ action: 'googleDisconnect' });
+document.getElementById('btn-import-csv').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const lines = text.trim().split('\n');
+  const headers = lines[0].split(',');
+  const activities = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].match(/(".*?"|[^,]*),?/g)?.map(v => v.replace(/,?$/, '').replace(/^"|"$/g, '').replace(/""/g, '"')) || [];
+    if (!vals[0]) continue;
+    activities.push({
+      ID: vals[0], Nom: vals[1] || '', Type: vals[2] || '', Date: vals[3] || '',
+      Distance_km: vals[4] || '', Duree: vals[5] || '', D_plus: vals[6] || '',
+      Lien_activite: vals[7] || '', Moyenne_FC: vals[8] || '',
+      Excluded: vals[9] === 'TRUE'
+    });
+  }
+  if (activities.length === 0) { alert('Aucune activité trouvée dans le fichier'); return; }
+  if (!confirm(`Importer ${activities.length} activités ? Cela remplacera les données actuelles.`)) return;
+  showLoading('Import en cours...');
+  await sendMessage({ action: 'importData', activities });
+  hideLoading();
+  alert(`${activities.length} activités importées!`);
+  await loadData();
+  updateTopBar();
+  e.target.value = '';
+});
+
+document.getElementById('btn-clear-data').addEventListener('click', async () => {
+  if (!confirm('Supprimer toutes les activités ? Cette action est irréversible.')) return;
+  await sendMessage({ action: 'importData', activities: [] });
+  rawData = [];
+  updateDashboard();
   updateTopBar();
 });
 

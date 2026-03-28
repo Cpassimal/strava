@@ -1,13 +1,22 @@
 # IDE
 .idea/
+.vscode/
+*.swp
 
 # Données personnelles
 toutes_mes_activites.csv
 toutes_mes_activites_tmp.csv
 activity_temp.html
+*.env
+*.env.*
 
 # Extension vendor (téléchargés, pas versionnés)
 strava-extension/vendor/
 
 # Extension icons (générés)
 strava-extension/icons/
+
+# Build / packaging
+*.zip
+*.crx
+*.pem

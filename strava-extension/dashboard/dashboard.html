@@ -22,10 +22,6 @@
         <span class="dot" id="strava-dot"></span>
         <span id="strava-label">Strava</span>
       </div>
-      <div class="status-badge">
-        <span class="dot" id="google-dot"></span>
-        <span id="google-label">Sheets</span>
-      </div>
       <span class="sync-text" id="sync-text"></span>
     </div>
     <div class="top-bar-right">
@@ -87,7 +83,8 @@
     <div class="card kpi-card"><h3>Distance Totale</h3><p id="kpi-dist">0</p></div>
     <div class="card kpi-card"><h3>Dénivelé Total</h3><p id="kpi-elev">0</p></div>
     <div class="card kpi-card"><h3>Volume</h3><p id="kpi-time">0</p></div>
-    <div class="card kpi-card"><h3>Forme (Moy)</h3><p id="kpi-score">0</p></div>
+    <div class="card kpi-card"><h3>Perf. Moy <sup>(1)</sup></h3><p id="kpi-score">0</p></div>
+    <div class="card kpi-card"><h3>Charge Moy <sup>(2)</sup></h3><p id="kpi-avg-charge">0</p></div>
     <div class="card kpi-card"><h3>Dist. Médiane</h3><p id="kpi-median-dist">0</p></div>
     <div class="card kpi-card"><h3>Activités</h3><p id="kpi-count">0</p></div>
     <div class="card kpi-card"><h3>Act. / période</h3><p id="kpi-avg-period">0</p></div>
@@ -108,6 +105,12 @@
         </div>
         <canvas id="perfChart"></canvas>
       </div>
+      <div class="card chart-box" id="c4" style="display:none;">
+        <div class="chart-options">
+          <label><input type="checkbox" id="zero-charge"> Min 0</label>
+        </div>
+        <canvas id="chargeChart"></canvas>
+      </div>
       <div class="card chart-box" id="c2" style="display:none;">
         <div class="chart-options">
           <label><input type="checkbox" id="zero-dist"> Min 0</label>
@@ -120,19 +123,13 @@
         </div>
         <canvas id="volumeChart"></canvas>
       </div>
-      <div class="card chart-box" id="c4" style="display:none;">
-        <div class="chart-options">
-          <label><input type="checkbox" id="zero-hr"> Min 40</label>
-        </div>
-        <canvas id="hrChart"></canvas>
-      </div>
     </div>
   </div>
 
   <!-- Tab: Activities list -->
   <div class="tab-content" id="tab-activities">
     <div class="exclude-info">
-      Exclure une activité retire sa FC et son score des moyennes (FC Moyenne, Score de Forme) mais conserve ses km, D+ et durée dans les totaux.
+      Exclure une activité retire uniquement son score du KPI "Forme" et du graphique "Performance". Tous les autres indicateurs (distance, D+, volume, charge, etc.) ne sont pas impactés.
     </div>
     <div style="margin-bottom:12px;">
       <input type="text" id="activities-search" placeholder="Rechercher une activité..." style="width:100%; padding:10px 14px; border:1px solid #d2d2d7; border-radius:8px; font-size:0.9rem;">
@@ -149,6 +146,7 @@
             <th data-sort="D_plus">D+</th>
             <th data-sort="Moyenne_FC">FC Moy</th>
             <th data-sort="score">Score</th>
+            <th data-sort="charge">Charge</th>
             <th></th>
           </tr>
         </thead>
@@ -156,6 +154,11 @@
       </table>
       <div class="pagination" id="pagination"></div>
     </div>
+  </div>
+
+  <div class="footnotes" id="footnotes" style="display:none;">
+    <p><sup>(1)</sup> <strong>Perf.</strong> = (vitesse équivalente × bonus endurance) / effort cardiaque, où vitesse équivalente = (dist + D+/facteur D+) / heures, bonus endurance = 1 + dist/bonus dist., effort cardiaque = (FC - FC repos) / (FC max - FC repos). Les activités exclues ne sont pas comptées.</p>
+    <p><sup>(2)</sup> <strong>Charge</strong> = dist + D+/facteur D+. Distance équivalente intégrant le dénivelé. Sommée par période sur le graphique.</p>
   </div>
 </div>
 
@@ -194,21 +197,15 @@
     </div>
 
     <div class="modal-section">
-      <h3>Google Sheets</h3>
-      <div class="connection-status" id="settings-google-status">
-        <span class="dot ko" id="settings-google-dot"></span>
-        <span id="settings-google-text">Non configuré</span>
-      </div>
-      <div class="form-group">
-        <label>Lien du Google Sheet</label>
-        <input type="text" id="google-sheet-url" placeholder="https://docs.google.com/spreadsheets/d/...">
-      </div>
-      <p style="font-size:0.75rem; color:#888; margin-bottom:10px;">
-        Créez un Sheet vide dans Google Drive, puis collez son URL ici. L'extension ajoutera les en-têtes automatiquement au premier rafraîchissement.
-      </p>
+      <h3>Données</h3>
+      <p style="font-size:0.8rem; color:#666; margin-bottom:12px;" id="data-count-info"></p>
       <div class="modal-actions">
-        <button class="btn btn-primary" id="btn-link-sheet">Lier ce Sheet</button>
-        <button class="btn btn-danger" id="btn-disconnect-google" style="display:none;">Délier</button>
+        <button class="btn btn-secondary" id="btn-export-csv">Exporter CSV</button>
+        <label class="btn btn-ghost" style="cursor:pointer;">
+          Importer CSV
+          <input type="file" id="btn-import-csv" accept=".csv" style="display:none;">
+        </label>
+        <button class="btn btn-danger" id="btn-clear-data">Tout supprimer</button>
       </div>
     </div>
 

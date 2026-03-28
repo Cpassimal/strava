@@ -92,7 +92,7 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
 /* KPIs */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   gap: 14px;
   margin-bottom: 30px;
   width: 100%;
@@ -107,16 +107,20 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
   box-sizing: border-box;
 }
 
+.kpi-card {
+  display: flex;
+  flex-direction: column-reverse;
+}
+
 .kpi-card h3 {
-  margin: 0;
-  font-size: 0.85rem;
-  color: #6e6e73;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  color: #999;
+  font-weight: 500;
 }
 
 .kpi-card p {
-  margin: 8px 0 0;
+  margin: 0;
   font-size: 1.5rem;
   font-weight: 800;
   color: #fc4c02;
@@ -320,6 +324,20 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
 }
 
 .empty-state p { margin-bottom: 20px; }
+
+/* Footnotes */
+.footnotes {
+  margin-top: 40px;
+  padding: 16px 20px;
+  font-size: 0.75rem;
+  color: #888;
+  line-height: 1.6;
+  border-top: 1px solid #e1e4e8;
+}
+
+.footnotes p { margin: 4px 0; }
+.footnotes sup { color: #fc4c02; font-weight: 600; }
+.footnotes strong { color: #666; }
 
 /* Tooltip */
 .has-tooltip {
