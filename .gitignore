@@ -10,8 +10,6 @@ activity_temp.html
 *.env
 *.env.*
 
-# Extension vendor (téléchargés, pas versionnés)
-strava-extension/vendor/
 
 # Extension icons (générés)
 strava-extension/icons/
