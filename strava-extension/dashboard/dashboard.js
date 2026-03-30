@@ -273,20 +273,36 @@ function hmsToHours(str) {
   return isNaN(s) ? 0 : s / 3600;
 }
 
-function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor) {
+function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor, fallbackHrEffort) {
   if (hours <= 0) return 0;
   const equivDist = dist + (elev / dplusFactor);
   const enduranceBonus = 1 + (dist / distBonusFactor);
   const equivSpeed = equivDist / hours;
   const hrReserve = fcMax - fcRepos;
+  let hrEffort;
   if (hr > 0 && hrReserve > 0) {
-    const hrEffort = (hr - fcRepos) / hrReserve;
+    hrEffort = (hr - fcRepos) / hrReserve;
     if (hrEffort <= 0.05) return 0;
-    const score = (equivSpeed * enduranceBonus) / hrEffort;
-    return isFinite(score) ? score : 0;
+  } else {
+    hrEffort = fallbackHrEffort || 0.65;
   }
-  // Sans FC : score basé uniquement sur vitesse équivalente
-  return isFinite(equivSpeed * enduranceBonus) ? equivSpeed * enduranceBonus : 0;
+  const score = (equivSpeed * enduranceBonus) / hrEffort;
+  return isFinite(score) ? score : 0;
+}
+
+function computeFallbackHrEffort(activities, fcMax, fcRepos) {
+  const hrReserve = fcMax - fcRepos;
+  if (hrReserve <= 0) return 0.65;
+  const efforts = [];
+  activities.forEach(d => {
+    const hr = cleanNum(d.Moyenne_FC);
+    if (hr > 0) {
+      const e = (hr - fcRepos) / hrReserve;
+      if (e > 0.05) efforts.push(e);
+    }
+  });
+  if (efforts.length === 0) return 0.65;
+  return efforts.reduce((a, b) => a + b, 0) / efforts.length;
 }
 
 let lastFilteredActivities = [];
@@ -425,7 +441,6 @@ function autoCalibrate() {
   const warnMsg = 'Données trop homogènes pour calibrer ce facteur — valeur inchangée.';
 
   // D+ factor: apply or warn
-  const warnElev = document.getElementById('warning-elev');
   if (rawDplus <= MIN_BOUND + 2 || rawDplus >= MAX_BOUND - 2) {
     warnElev.textContent = warnMsg;
     warnElev.style.display = 'block';
@@ -435,7 +450,6 @@ function autoCalibrate() {
   }
 
   // Dist factor: apply or warn
-  const warnDist = document.getElementById('warning-dist');
   if (rawDist <= MIN_BOUND + 2 || rawDist >= MAX_BOUND - 2) {
     warnDist.textContent = warnMsg;
     warnDist.style.display = 'block';
@@ -599,6 +613,7 @@ function updateDashboard() {
   const fcRepos = parseInt(document.getElementById('fc-repos').value) || 46;
   const dplusFactor = parseInt(document.getElementById('dplus-factor').value) || 185;
   const distBonusFactor = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
+  const fallbackHrEffort = computeFallbackHrEffort(filtered, fcMax, fcRepos);
 
   filtered.forEach(d => {
     const dist = cleanNum(d.Distance_km);
@@ -635,7 +650,7 @@ function updateDashboard() {
 
     // Only count for score if not excluded
     if (!excluded) {
-      const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
+      const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor, fallbackHrEffort);
       groupedData[key].perfSum += score;
       groupedData[key].perfCount += 1;
       totalPerfScore += score;
@@ -680,7 +695,7 @@ function updateDashboard() {
     const elev = cleanNum(d.D_plus);
     const hours = hmsToHours(d.Duree);
     const hr = cleanNum(d.Moyenne_FC);
-    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
+    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor, fallbackHrEffort);
     const charge = dist + elev / dplusFactor;
     return { ...d, score, charge };
   });
