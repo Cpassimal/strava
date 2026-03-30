@@ -11,9 +11,6 @@ activity_temp.html
 *.env.*
 
 
-# Extension icons (générés)
-strava-extension/icons/
-
 # Build / packaging
 *.zip
 *.crx
