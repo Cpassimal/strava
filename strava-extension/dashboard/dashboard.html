@@ -72,12 +72,7 @@
     </div>
 
     <div class="filter-row bordered">
-      <strong>Paramètres personnels :</strong>
-      <label>FC Repos <input type="number" id="fc-repos" value="46" min="30" max="100" style="width:60px;"></label>
-      <label>FC Max <input type="number" id="fc-max" value="200" min="100" max="230" style="width:60px;"></label>
-      <label style="cursor:help;" class="has-tooltip">Facteur D+ <input type="number" id="dplus-factor" value="185" min="50" max="500" step="5" style="width:60px;"><span class="tooltip">Diviseur du D+ dans le score. Plus c'est haut, moins le D+ compte.</span></label>
-      <label style="cursor:help;" class="has-tooltip">Bonus dist. <input type="number" id="dist-bonus-factor" value="110" min="50" max="500" step="5" style="width:60px;"><span class="tooltip">Diviseur du bonus endurance (1 + dist/X). Plus c'est haut, moins les longues distances sont récompensées.</span></label>
-      <span style="border-left:1px solid #eee; height:20px; margin:0 10px;"></span>
+      <button class="btn btn-ghost" id="btn-perso">Paramètres perso</button>
       <label><input type="checkbox" id="show-trend"> Tendances</label>
     </div>
   </div>
@@ -221,6 +216,62 @@
 
     <div style="text-align:right; margin-top:10px;">
       <button class="btn btn-ghost" id="btn-close-settings">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Personal Parameters Modal -->
+<div class="modal-overlay" id="perso-modal">
+  <div class="modal">
+    <h2>Paramètres personnels</h2>
+
+    <div class="modal-section">
+      <h3>Fréquence cardiaque</h3>
+      <div class="perso-row">
+        <label>FC Repos <input type="number" id="fc-repos" value="46" min="30" max="100" style="width:70px;"> bpm</label>
+        <label>FC Max <input type="number" id="fc-max" value="200" min="100" max="230" style="width:70px;"> bpm</label>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <h3>Facteurs de scoring</h3>
+      <p class="perso-explain">Les facteurs calibrent le score de performance pour qu'il soit neutre vis-à-vis du profil de sortie. L'auto-calibrage ajuste chaque facteur par dichotomie jusqu'à ce que la perf moyenne des activités sous la médiane soit égale à celle au-dessus.</p>
+
+      <div class="factor-group">
+        <div class="factor-header">
+          <label class="has-tooltip">Facteur D+ <input type="number" id="dplus-factor" value="185" min="50" max="500" step="5" style="width:70px;"><span class="tooltip">Diviseur du D+ dans le score. Plus c'est haut, moins le D+ compte.</span></label>
+          <div class="factor-indicator" id="indicator-elev">
+            <span class="factor-group-label">&#9660; médiane</span>
+            <span class="factor-value" id="perf-below-elev">-</span>
+            <span class="factor-vs">vs</span>
+            <span class="factor-group-label">&#9650; médiane</span>
+            <span class="factor-value" id="perf-above-elev">-</span>
+            <span class="factor-delta" id="delta-elev"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="factor-group">
+        <div class="factor-header">
+          <label class="has-tooltip">Facteur dist. <input type="number" id="dist-bonus-factor" value="110" min="50" max="500" step="5" style="width:70px;"><span class="tooltip">Diviseur du bonus endurance (1 + dist/X). Plus c'est haut, moins les longues distances sont récompensées.</span></label>
+          <div class="factor-indicator" id="indicator-dist">
+            <span class="factor-group-label">&#9660; médiane</span>
+            <span class="factor-value" id="perf-below-dist">-</span>
+            <span class="factor-vs">vs</span>
+            <span class="factor-group-label">&#9650; médiane</span>
+            <span class="factor-value" id="perf-above-dist">-</span>
+            <span class="factor-delta" id="delta-dist"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="margin-top:16px;">
+        <button class="btn btn-secondary" id="btn-auto-calibrate">Auto-calibrer</button>
+      </div>
+    </div>
+
+    <div style="text-align:right; margin-top:10px;">
+      <button class="btn btn-ghost" id="btn-close-perso">Fermer</button>
     </div>
   </div>
 </div>

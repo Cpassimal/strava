@@ -287,6 +287,140 @@ function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFac
 
 let lastFilteredActivities = [];
 
+// ─── Calibration helpers ───
+function getFilteredActivitiesForCalibration() {
+  const minVal = document.getElementById('date-min').value;
+  const maxVal = document.getElementById('date-max').value;
+  const distMin = parseFloat(document.getElementById('dist-min').value) || 0;
+  const distMaxVal = document.getElementById('dist-max').value;
+  const distMax = distMaxVal ? parseFloat(distMaxVal) : Infinity;
+  const elevMin = parseFloat(document.getElementById('elev-min').value) || 0;
+  const elevMaxVal = document.getElementById('elev-max').value;
+  const elevMax = elevMaxVal ? parseFloat(elevMaxVal) : Infinity;
+
+  return rawData.filter(d => {
+    const isTypeMatch = [...document.querySelectorAll('#sport-selector .type-pill.active')].map(p => p.textContent).includes(d.Type);
+    const activityDate = (d.Date || '').split('T')[0];
+    const dist = cleanNum(d.Distance_km);
+    const elev = cleanNum(d.D_plus);
+    const hours = hmsToHours(d.Duree);
+    const hr = cleanNum(d.Moyenne_FC);
+    return isTypeMatch && activityDate >= minVal && activityDate <= maxVal
+      && dist >= distMin && dist <= distMax && elev >= elevMin && elev <= elevMax
+      && hours > 0 && !d.Excluded && hr > 0;
+  });
+}
+
+function avgPerfForSplit(activities, splitKey, median, dplusFactor, distBonusFactor) {
+  const fcMax = parseInt(document.getElementById('fc-max').value) || 200;
+  const fcRepos = parseInt(document.getElementById('fc-repos').value) || 46;
+  const below = [], above = [];
+  activities.forEach(d => {
+    const val = cleanNum(d[splitKey]);
+    const dist = cleanNum(d.Distance_km);
+    const elev = cleanNum(d.D_plus);
+    const hours = hmsToHours(d.Duree);
+    const hr = cleanNum(d.Moyenne_FC);
+    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
+    if (score <= 0) return;
+    if (val <= median) below.push(score); else above.push(score);
+  });
+  const avgBelow = below.length > 0 ? below.reduce((a, b) => a + b, 0) / below.length : 0;
+  const avgAbove = above.length > 0 ? above.reduce((a, b) => a + b, 0) / above.length : 0;
+  return { avgBelow, avgAbove };
+}
+
+function computeMedian(values) {
+  if (values.length === 0) return 0;
+  values.sort((a, b) => a - b);
+  const mid = Math.floor(values.length / 2);
+  return values.length % 2 === 0 ? (values[mid - 1] + values[mid]) / 2 : values[mid];
+}
+
+function updateCalibrationIndicators() {
+  const activities = getFilteredActivitiesForCalibration();
+  const dplusFactor = parseInt(document.getElementById('dplus-factor').value) || 185;
+  const distBonusFactor = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
+
+  const elevValues = activities.map(d => cleanNum(d.D_plus));
+  const distValues = activities.map(d => cleanNum(d.Distance_km));
+  const medianElev = computeMedian([...elevValues]);
+  const medianDist = computeMedian([...distValues]);
+
+  const elevSplit = avgPerfForSplit(activities, 'D_plus', medianElev, dplusFactor, distBonusFactor);
+  const distSplit = avgPerfForSplit(activities, 'Distance_km', medianDist, dplusFactor, distBonusFactor);
+
+  function renderIndicator(prefix, split) {
+    document.getElementById(`perf-below-${prefix}`).textContent = split.avgBelow > 0 ? split.avgBelow.toFixed(2) : '-';
+    document.getElementById(`perf-above-${prefix}`).textContent = split.avgAbove > 0 ? split.avgAbove.toFixed(2) : '-';
+    const deltaEl = document.getElementById(`delta-${prefix}`);
+    if (split.avgBelow > 0 && split.avgAbove > 0) {
+      const pct = Math.abs(split.avgAbove - split.avgBelow) / ((split.avgAbove + split.avgBelow) / 2) * 100;
+      deltaEl.textContent = pct < 1 ? 'OK' : `${pct.toFixed(0)}%`;
+      deltaEl.className = `factor-delta ${pct < 5 ? 'balanced' : 'unbalanced'}`;
+    } else {
+      deltaEl.textContent = '';
+      deltaEl.className = 'factor-delta';
+    }
+  }
+
+  renderIndicator('elev', elevSplit);
+  renderIndicator('dist', distSplit);
+}
+
+function autoCalibrate() {
+  const activities = getFilteredActivitiesForCalibration();
+  if (activities.length < 4) return;
+
+  const elevValues = activities.map(d => cleanNum(d.D_plus));
+  const distValues = activities.map(d => cleanNum(d.Distance_km));
+  const medianElev = computeMedian([...elevValues]);
+  const medianDist = computeMedian([...distValues]);
+
+  let bestDplus = parseInt(document.getElementById('dplus-factor').value) || 185;
+  let bestDist = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
+
+  // Alternate passes to converge both factors
+  for (let pass = 0; pass < 3; pass++) {
+    // Calibrate D+ factor
+    let lo = 50, hi = 500;
+    for (let i = 0; i < 30; i++) {
+      const mid = (lo + hi) / 2;
+      const { avgBelow, avgAbove } = avgPerfForSplit(activities, 'D_plus', medianElev, mid, bestDist);
+      if (avgBelow === 0 || avgAbove === 0) break;
+      if (avgAbove < avgBelow) hi = mid; else lo = mid;
+      if (Math.abs(hi - lo) < 1) break;
+    }
+    bestDplus = Math.round((lo + hi) / 2);
+
+    // Calibrate dist factor
+    lo = 50; hi = 500;
+    for (let i = 0; i < 30; i++) {
+      const mid = (lo + hi) / 2;
+      const { avgBelow, avgAbove } = avgPerfForSplit(activities, 'Distance_km', medianDist, bestDplus, mid);
+      if (avgBelow === 0 || avgAbove === 0) break;
+      if (avgAbove < avgBelow) hi = mid; else lo = mid;
+      if (Math.abs(hi - lo) < 1) break;
+    }
+    bestDist = Math.round((lo + hi) / 2);
+  }
+
+  document.getElementById('dplus-factor').value = bestDplus;
+  document.getElementById('dist-bonus-factor').value = bestDist;
+
+  updateCalibrationIndicators();
+  updateDashboard();
+}
+
+function openPersoModal() {
+  document.getElementById('perso-modal').classList.add('active');
+  updateCalibrationIndicators();
+}
+
+function closePersoModal() {
+  document.getElementById('perso-modal').classList.remove('active');
+}
+
 // ─── Tabs ───
 function switchTab(tabName) {
   currentTab = tabName;
@@ -697,7 +831,7 @@ document.querySelectorAll('#window-selector .type-pill').forEach(pill => {
 });
 
 // Filter inputs
-['date-min', 'date-max', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'].forEach(id => {
+['date-min', 'date-max', 'dist-min', 'dist-max', 'elev-min', 'elev-max'].forEach(id => {
   document.getElementById(id).addEventListener('change', updateDashboard);
 });
 
@@ -770,6 +904,20 @@ document.getElementById('pagination').addEventListener('click', (e) => {
 document.getElementById('btn-refresh').addEventListener('click', doRefresh);
 document.getElementById('btn-settings').addEventListener('click', openSettings);
 document.getElementById('btn-setup')?.addEventListener('click', openSettings);
+
+// Personal parameters modal
+document.getElementById('btn-perso').addEventListener('click', openPersoModal);
+document.getElementById('btn-close-perso').addEventListener('click', closePersoModal);
+document.getElementById('perso-modal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('perso-modal')) closePersoModal();
+});
+document.getElementById('btn-auto-calibrate').addEventListener('click', autoCalibrate);
+['fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    updateCalibrationIndicators();
+    updateDashboard();
+  });
+});
 
 // Settings modal
 document.getElementById('btn-close-settings').addEventListener('click', closeSettings);
