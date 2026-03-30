@@ -90,12 +90,47 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
 .btn-ghost { background: transparent; color: #666; border: 1px solid #d2d2d7; }
 
 /* KPIs */
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 14px;
+.kpi-panel {
   margin-bottom: 30px;
-  width: 100%;
+  padding: 20px 28px;
+}
+
+.kpi-row {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.kpi-divider {
+  height: 1px;
+  background: #e8e8ed;
+  margin: 14px 0;
+}
+
+.kpi-item {
+  text-align: center;
+  flex: 1;
+  padding: 4px 8px;
+}
+
+.kpi-item + .kpi-item {
+  border-left: 1px solid #e8e8ed;
+}
+
+.kpi-item p {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #fc4c02;
+}
+
+.kpi-item h3 {
+  margin: 4px 0 0;
+  font-size: 0.7rem;
+  color: #999;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
 .card {
@@ -105,25 +140,6 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
   box-shadow: 0 2px 10px rgba(0,0,0,0.05);
   border: 1px solid #e1e4e8;
   box-sizing: border-box;
-}
-
-.kpi-card {
-  display: flex;
-  flex-direction: column-reverse;
-}
-
-.kpi-card h3 {
-  margin: 6px 0 0;
-  font-size: 0.75rem;
-  color: #999;
-  font-weight: 500;
-}
-
-.kpi-card p {
-  margin: 0;
-  font-size: 1.5rem;
-  font-weight: 800;
-  color: #fc4c02;
 }
 
 /* Filters */

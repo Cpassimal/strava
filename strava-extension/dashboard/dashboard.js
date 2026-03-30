@@ -11,7 +11,7 @@ const USER_CONFIG_KEY = 'user_config';
 
 // ─── User Config ───
 const CONFIG_FIELDS = {
-  inputs: ['date-min', 'dist-min', 'dist-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'],
+  inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'],
   checkboxes: ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge']
 };
 
@@ -407,17 +407,23 @@ function updateDashboard() {
   const distMaxVal = document.getElementById('dist-max').value;
   const distMax = distMaxVal ? parseFloat(distMaxVal) : Infinity;
 
+  const elevMin = parseFloat(document.getElementById('elev-min').value) || 0;
+  const elevMaxVal = document.getElementById('elev-max').value;
+  const elevMax = elevMaxVal ? parseFloat(elevMaxVal) : Infinity;
+
   const filtered = rawData.filter(d => {
     const isTypeMatch = [...document.querySelectorAll('#sport-selector .type-pill.active')].map(p => p.textContent).includes(d.Type);
     const activityDate = (d.Date || '').split('T')[0];
     const dist = cleanNum(d.Distance_km);
-    return isTypeMatch && activityDate >= minVal && activityDate <= maxVal && dist >= distMin && dist <= distMax;
+    const elev = cleanNum(d.D_plus);
+    return isTypeMatch && activityDate >= minVal && activityDate <= maxVal && dist >= distMin && dist <= distMax && elev >= elevMin && elev <= elevMax;
   });
 
   const groupedData = {};
   let totalDist = 0, totalElev = 0, totalHours = 0, totalCount = 0;
   let totalPerfScore = 0, countForScore = 0, totalCharge = 0;
   const allDistances = [];
+  const allElevations = [];
 
   const fcMax = parseInt(document.getElementById('fc-max').value) || 200;
   const fcRepos = parseInt(document.getElementById('fc-repos').value) || 46;
@@ -455,6 +461,7 @@ function updateDashboard() {
     totalHours += hours;
     totalCount++;
     allDistances.push(dist);
+    allElevations.push(elev);
 
     // Only count for score if not excluded
     if (!excluded) {
@@ -481,6 +488,15 @@ function updateDashboard() {
       : allDistances[Math.floor(allDistances.length / 2)])
     : 0;
   document.getElementById('kpi-median-dist').textContent = median > 0 ? median.toFixed(1) + ' km' : '-';
+
+  // Median D+
+  allElevations.sort((a, b) => a - b);
+  const medianElev = allElevations.length > 0
+    ? (allElevations.length % 2 === 0
+      ? (allElevations[allElevations.length / 2 - 1] + allElevations[allElevations.length / 2]) / 2
+      : allElevations[Math.floor(allElevations.length / 2)])
+    : 0;
+  document.getElementById('kpi-median-elev').textContent = medianElev > 0 ? Math.round(medianElev) + ' m' : '-';
 
   const sortedKeys = Object.keys(groupedData).sort();
   const nbPeriods = sortedKeys.length;
@@ -681,7 +697,7 @@ document.querySelectorAll('#window-selector .type-pill').forEach(pill => {
 });
 
 // Filter inputs
-['date-min', 'date-max', 'dist-min', 'dist-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'].forEach(id => {
+['date-min', 'date-max', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'].forEach(id => {
   document.getElementById(id).addEventListener('change', updateDashboard);
 });
 

@@ -53,6 +53,10 @@
       <strong>Distance :</strong>
       <label><input type="number" id="dist-min" value="0" min="0" step="1" style="width:60px;"> km min</label>
       <label><input type="number" id="dist-max" value="" min="0" step="1" style="width:60px;" placeholder="∞"> km max</label>
+      <span style="border-left:1px solid #eee; height:20px; margin:0 10px;"></span>
+      <strong>D+ :</strong>
+      <label><input type="number" id="elev-min" value="0" min="0" step="10" style="width:60px;"> m min</label>
+      <label><input type="number" id="elev-max" value="" min="0" step="10" style="width:60px;" placeholder="∞"> m max</label>
     </div>
 
     <div class="filter-row bordered">
@@ -79,15 +83,21 @@
   </div>
 
   <!-- KPIs -->
-  <div class="kpi-grid" id="kpi-container" style="display:none;">
-    <div class="card kpi-card"><h3>Distance Totale</h3><p id="kpi-dist">0</p></div>
-    <div class="card kpi-card"><h3>Dénivelé Total</h3><p id="kpi-elev">0</p></div>
-    <div class="card kpi-card"><h3>Volume</h3><p id="kpi-time">0</p></div>
-    <div class="card kpi-card"><h3>Perf. Moy <sup>(1)</sup></h3><p id="kpi-score">0</p></div>
-    <div class="card kpi-card"><h3>Charge Moy <sup>(2)</sup></h3><p id="kpi-avg-charge">0</p></div>
-    <div class="card kpi-card"><h3>Dist. Médiane</h3><p id="kpi-median-dist">0</p></div>
-    <div class="card kpi-card"><h3>Activités</h3><p id="kpi-count">0</p></div>
-    <div class="card kpi-card"><h3>Act. / période</h3><p id="kpi-avg-period">0</p></div>
+  <div class="card kpi-panel" id="kpi-container" style="display:none;">
+    <div class="kpi-row">
+      <div class="kpi-item"><p id="kpi-count">0</p><h3>Activités</h3></div>
+      <div class="kpi-item"><p id="kpi-dist">0</p><h3>Distance Totale</h3></div>
+      <div class="kpi-item"><p id="kpi-elev">0</p><h3>Dénivelé Total</h3></div>
+      <div class="kpi-item"><p id="kpi-time">0</p><h3>Volume</h3></div>
+      <div class="kpi-item"><p id="kpi-avg-period">0</p><h3>Act. / période</h3></div>
+    </div>
+    <div class="kpi-divider"></div>
+    <div class="kpi-row">
+      <div class="kpi-item"><p id="kpi-score">0</p><h3>Perf. Moy <sup>(1)</sup></h3></div>
+      <div class="kpi-item"><p id="kpi-avg-charge">0</p><h3>Charge Moy <sup>(2)</sup></h3></div>
+      <div class="kpi-item"><p id="kpi-median-dist">0</p><h3>Dist. Médiane</h3></div>
+      <div class="kpi-item"><p id="kpi-median-elev">0</p><h3>D+ Médian</h3></div>
+    </div>
   </div>
 
   <!-- Tabs -->
