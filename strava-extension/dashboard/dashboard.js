@@ -274,15 +274,19 @@ function hmsToHours(str) {
 }
 
 function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor) {
-  const hrReserve = fcMax - fcRepos;
-  if (hrReserve <= 0 || hours <= 0) return 0;
+  if (hours <= 0) return 0;
   const equivDist = dist + (elev / dplusFactor);
   const enduranceBonus = 1 + (dist / distBonusFactor);
   const equivSpeed = equivDist / hours;
-  const hrEffort = (hr - fcRepos) / hrReserve;
-  if (hrEffort <= 0.05) return 0;
-  const score = (equivSpeed * enduranceBonus) / hrEffort;
-  return isFinite(score) ? score : 0;
+  const hrReserve = fcMax - fcRepos;
+  if (hr > 0 && hrReserve > 0) {
+    const hrEffort = (hr - fcRepos) / hrReserve;
+    if (hrEffort <= 0.05) return 0;
+    const score = (equivSpeed * enduranceBonus) / hrEffort;
+    return isFinite(score) ? score : 0;
+  }
+  // Sans FC : score basé uniquement sur vitesse équivalente
+  return isFinite(equivSpeed * enduranceBonus) ? equivSpeed * enduranceBonus : 0;
 }
 
 let lastFilteredActivities = [];
@@ -370,7 +374,16 @@ function updateCalibrationIndicators() {
 
 function autoCalibrate() {
   const activities = getFilteredActivitiesForCalibration();
-  if (activities.length < 4) return;
+  const warnElev = document.getElementById('warning-elev');
+  const warnDist = document.getElementById('warning-dist');
+  if (activities.length < 4) {
+    const msg = activities.length === 0 && rawData.some(d => cleanNum(d.Moyenne_FC) === 0)
+      ? 'Calibrage impossible : pas assez d\'activités avec FC enregistrée. Les valeurs par défaut restent adaptées.'
+      : 'Pas assez d\'activités pour calibrer (minimum 4).';
+    warnElev.textContent = msg; warnElev.style.display = 'block';
+    warnDist.textContent = msg; warnDist.style.display = 'block';
+    return;
+  }
 
   const elevValues = activities.map(d => cleanNum(d.D_plus));
   const distValues = activities.map(d => cleanNum(d.Distance_km));
