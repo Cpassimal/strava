@@ -379,6 +379,16 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
   color: #c77800;
 }
 
+.factor-warning {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: #996600;
+  background: #fff8e1;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #ffe082;
+}
+
 /* Loading overlay */
 .loading-overlay {
   display: none;

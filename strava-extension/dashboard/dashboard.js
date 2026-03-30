@@ -377,13 +377,15 @@ function autoCalibrate() {
   const medianElev = computeMedian([...elevValues]);
   const medianDist = computeMedian([...distValues]);
 
+  const MIN_BOUND = 50, MAX_BOUND = 500;
   let bestDplus = parseInt(document.getElementById('dplus-factor').value) || 185;
   let bestDist = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
+  let rawDplus, rawDist;
 
   // Alternate passes to converge both factors
   for (let pass = 0; pass < 3; pass++) {
     // Calibrate D+ factor
-    let lo = 50, hi = 500;
+    let lo = MIN_BOUND, hi = MAX_BOUND;
     for (let i = 0; i < 30; i++) {
       const mid = (lo + hi) / 2;
       const { avgBelow, avgAbove } = avgPerfForSplit(activities, 'D_plus', medianElev, mid, bestDist);
@@ -391,10 +393,11 @@ function autoCalibrate() {
       if (avgAbove < avgBelow) hi = mid; else lo = mid;
       if (Math.abs(hi - lo) < 1) break;
     }
-    bestDplus = Math.round((lo + hi) / 2);
+    rawDplus = Math.round((lo + hi) / 2);
+    bestDplus = rawDplus;
 
     // Calibrate dist factor
-    lo = 50; hi = 500;
+    lo = MIN_BOUND; hi = MAX_BOUND;
     for (let i = 0; i < 30; i++) {
       const mid = (lo + hi) / 2;
       const { avgBelow, avgAbove } = avgPerfForSplit(activities, 'Distance_km', medianDist, bestDplus, mid);
@@ -402,11 +405,31 @@ function autoCalibrate() {
       if (avgAbove < avgBelow) hi = mid; else lo = mid;
       if (Math.abs(hi - lo) < 1) break;
     }
-    bestDist = Math.round((lo + hi) / 2);
+    rawDist = Math.round((lo + hi) / 2);
+    bestDist = rawDist;
   }
 
-  document.getElementById('dplus-factor').value = bestDplus;
-  document.getElementById('dist-bonus-factor').value = bestDist;
+  const warnMsg = 'Données trop homogènes pour calibrer ce facteur — valeur inchangée.';
+
+  // D+ factor: apply or warn
+  const warnElev = document.getElementById('warning-elev');
+  if (rawDplus <= MIN_BOUND + 2 || rawDplus >= MAX_BOUND - 2) {
+    warnElev.textContent = warnMsg;
+    warnElev.style.display = 'block';
+  } else {
+    document.getElementById('dplus-factor').value = bestDplus;
+    warnElev.style.display = 'none';
+  }
+
+  // Dist factor: apply or warn
+  const warnDist = document.getElementById('warning-dist');
+  if (rawDist <= MIN_BOUND + 2 || rawDist >= MAX_BOUND - 2) {
+    warnDist.textContent = warnMsg;
+    warnDist.style.display = 'block';
+  } else {
+    document.getElementById('dist-bonus-factor').value = bestDist;
+    warnDist.style.display = 'none';
+  }
 
   updateCalibrationIndicators();
   updateDashboard();
