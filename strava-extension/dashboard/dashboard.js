@@ -221,7 +221,6 @@ function showUI() {
   document.getElementById('filters-container').style.display = 'flex';
   document.getElementById('kpi-container').style.display = 'grid';
   document.getElementById('tab-bar').style.display = 'flex';
-  document.getElementById('footnotes').style.display = 'block';
   document.getElementById('empty-state').style.display = 'none';
   ['c1', 'c2', 'c3', 'c4'].forEach(id => {
     document.getElementById(id).style.display = 'block';
@@ -955,6 +954,11 @@ document.getElementById('pagination').addEventListener('click', (e) => {
 document.getElementById('btn-refresh').addEventListener('click', doRefresh);
 document.getElementById('btn-settings').addEventListener('click', openSettings);
 document.getElementById('btn-setup')?.addEventListener('click', openSettings);
+
+// Help button
+document.getElementById('btn-help').addEventListener('click', () => {
+  window.open('doc.html', '_blank');
+});
 
 // Personal parameters modal
 document.getElementById('btn-perso').addEventListener('click', openPersoModal);

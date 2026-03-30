@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Documentation — Strava Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: #f0f2f5;
+      color: #1d1d1f;
+      padding: 40px 20px;
+      line-height: 1.7;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 1.6rem; margin-bottom: 8px; }
+    .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 40px; }
+    h2 {
+      font-size: 1.15rem;
+      margin: 36px 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid #fc4c02;
+      color: #1d1d1f;
+    }
+    h3 {
+      font-size: 1rem;
+      margin: 20px 0 8px;
+      color: #333;
+    }
+    p, li { font-size: 0.9rem; color: #444; }
+    p { margin-bottom: 10px; }
+    ul { margin: 8px 0 12px 20px; }
+    li { margin-bottom: 4px; }
+    .formula {
+      background: white;
+      border: 1px solid #e1e4e8;
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin: 12px 0;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      color: #1d1d1f;
+      line-height: 1.8;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+    }
+    .formula .label { color: #fc4c02; font-weight: 600; }
+    .formula .comment { color: #999; font-style: italic; }
+    .card {
+      background: white;
+      border: 1px solid #e1e4e8;
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin: 12px 0;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+    }
+    .card p { margin-bottom: 6px; }
+    .card p:last-child { margin-bottom: 0; }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .tag-green { background: #e6f9ed; color: #1a8a4a; }
+    .tag-orange { background: #fff3e0; color: #c77800; }
+    .tag-blue { background: #e8f0fe; color: #1a56db; }
+    .back-link {
+      display: inline-block;
+      margin-bottom: 20px;
+      color: #fc4c02;
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .back-link:hover { text-decoration: underline; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      margin: 12px 0;
+    }
+    th, td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #e8e8ed;
+      text-align: left;
+    }
+    th { background: #f9f9fb; font-weight: 600; color: #333; }
+    td { color: #444; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <a class="back-link" href="dashboard.html">&larr; Retour au dashboard</a>
+  <h1>Documentation</h1>
+  <p class="subtitle">Formules, métriques et logique de calcul du dashboard Strava.</p>
+
+  <!-- ─── KPIs ─── -->
+  <h2>KPIs</h2>
+
+  <table>
+    <thead>
+      <tr><th>KPI</th><th>Formule</th><th>Note</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Activités</td><td>Nombre d'activités filtrées</td><td>Inclut les activités exclues</td></tr>
+      <tr><td>Distance Totale</td><td>Somme des distances (km)</td><td></td></tr>
+      <tr><td>Dénivelé Total</td><td>Somme des D+ (m)</td><td></td></tr>
+      <tr><td>Volume</td><td>Somme des durées (h)</td><td></td></tr>
+      <tr><td>Act. / période</td><td>Activités / nombre de périodes</td><td>Dépend de la fenêtre choisie</td></tr>
+      <tr><td>Perf. Moy</td><td>Moyenne des scores de performance</td><td>Exclut les activités marquées exclues</td></tr>
+      <tr><td>Charge Moy</td><td>Moyenne des charges par activité</td><td></td></tr>
+      <tr><td>Dist. Médiane</td><td>Médiane des distances</td><td>Utile pour le calibrage</td></tr>
+      <tr><td>D+ Médian</td><td>Médiane des D+</td><td>Utile pour le calibrage</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ─── Performance ─── -->
+  <h2>Score de performance</h2>
+
+  <p>Le score de performance évalue chaque activité en combinant vitesse, dénivelé, distance et (si disponible) effort cardiaque.</p>
+
+  <div class="formula">
+    <span class="label">Perf</span> = (vitesse_equiv × bonus_endurance) / effort_cardiaque<br><br>
+    <span class="label">vitesse_equiv</span> = (distance + D+ / facteur_D+) / heures<br>
+    <span class="label">bonus_endurance</span> = 1 + distance / facteur_dist<br>
+    <span class="label">effort_cardiaque</span> = (FC_moy - FC_repos) / (FC_max - FC_repos)
+  </div>
+
+  <h3>Composantes</h3>
+  <ul>
+    <li><strong>Vitesse équivalente</strong> — Intègre le D+ en le convertissant en kilomètres équivalents via le facteur D+. Une sortie de 10km avec 500m de D+ et un facteur de 100 donne une distance équivalente de 15km.</li>
+    <li><strong>Bonus endurance</strong> — Récompense progressivement les sorties longues. Le facteur distance contrôle l'amplitude : plus il est élevé, moins le bonus est marqué.</li>
+    <li><strong>Effort cardiaque</strong> — Normalise le score par l'intensité. Courir vite avec une FC basse donne un meilleur score que la même vitesse avec une FC élevée. Utilise la réserve cardiaque (méthode Karvonen).</li>
+  </ul>
+
+  <h3>Gestion de l'absence de FC</h3>
+  <p>Toutes les montres n'enregistrent pas la fréquence cardiaque. Le dashboard gère 3 cas :</p>
+
+  <div class="card">
+    <p><span class="tag tag-green">Cas 1</span> <strong>L'activité a une FC</strong> — Formule complète, effort cardiaque réel.</p>
+    <p><span class="tag tag-orange">Cas 2</span> <strong>Pas de FC, mais d'autres activités filtrées en ont</strong> — L'effort cardiaque est remplacé par la moyenne des efforts cardiaques des activités avec FC. Cela revient à dire "cette sortie a été faite à mon intensité habituelle".</p>
+    <p><span class="tag tag-blue">Cas 3</span> <strong>Aucune activité n'a de FC</strong> — L'effort cardiaque est fixé à 0.65 (65% de la réserve cardiaque), correspondant à un effort d'endurance fondamentale typique.</p>
+  </div>
+
+  <p>Les scores des cas 2 et 3 sont comparables aux scores du cas 1 car ils utilisent la même échelle. La transition est progressive si le user s'équipe d'un cardio par la suite.</p>
+
+  <!-- ─── Charge ─── -->
+  <h2>Charge</h2>
+
+  <div class="formula">
+    <span class="label">Charge</span> = distance + D+ / facteur_D+
+  </div>
+
+  <p>La charge est la distance équivalente intégrant le dénivelé. C'est une mesure de volume mécanique indépendante de la FC. Sur les graphiques, elle est sommée par période (semaine, mois, etc.).</p>
+
+  <!-- ─── Exclusion ─── -->
+  <h2>Exclusion d'activités</h2>
+
+  <p>Exclure une activité retire <strong>uniquement</strong> son score du KPI "Perf. Moy" et du graphique de performance. Tous les autres indicateurs (distance, D+, volume, charge, médiane, etc.) ne sont pas impactés.</p>
+  <p>Cas d'usage : exclure une sortie aberrante (montre buggée, activité non représentative) sans perdre sa contribution aux totaux de volume.</p>
+
+  <!-- ─── Facteurs ─── -->
+  <h2>Facteurs de scoring</h2>
+
+  <h3>Facteur D+</h3>
+  <p>Contrôle la conversion du D+ en kilomètres équivalents. <strong>Plus il est élevé, moins le D+ pèse</strong> dans le score.</p>
+  <ul>
+    <li>Un traileur puissant en montée aura un facteur D+ plus élevé (le D+ le pénalise moins).</li>
+    <li>Un runner de plat aura un facteur plus bas.</li>
+    <li>Valeur par défaut : 185.</li>
+  </ul>
+
+  <h3>Facteur distance</h3>
+  <p>Contrôle le bonus accordé aux sorties longues. <strong>Plus il est élevé, moins les longues distances sont récompensées.</strong></p>
+  <ul>
+    <li>Valeur par défaut : 110.</li>
+  </ul>
+
+  <!-- ─── Calibrage ─── -->
+  <h2>Auto-calibrage</h2>
+
+  <h3>Principe</h3>
+  <p>L'objectif est de trouver les facteurs pour lesquels le score de performance est <strong>neutre</strong> vis-à-vis du profil de sortie. Une sortie courte/plate ne doit pas systématiquement scorer mieux (ou moins bien) qu'une longue/vallonnée.</p>
+
+  <h3>Méthode</h3>
+  <p>Pour chaque facteur, les activités sont séparées en deux groupes par la médiane (D+ médian pour le facteur D+, distance médiane pour le facteur distance). L'algorithme cherche par <strong>dichotomie</strong> la valeur du facteur qui égalise la performance moyenne des deux groupes.</p>
+
+  <div class="formula">
+    <span class="comment">Objectif :</span><br>
+    perf_moyenne(activités ≤ médiane) = perf_moyenne(activités > médiane)
+  </div>
+
+  <p>Les deux facteurs étant légèrement couplés (le facteur D+ affecte aussi le split par distance), l'algorithme fait <strong>3 passes alternées</strong> pour converger.</p>
+
+  <h3>Indicateurs visuels</h3>
+  <p>La modale "Paramètres perso" affiche pour chaque facteur :</p>
+  <ul>
+    <li>La perf moyenne du groupe sous la médiane et au-dessus.</li>
+    <li>Un badge : <span class="tag tag-green">OK</span> si l'écart est &lt; 5%, <span class="tag tag-orange">X%</span> sinon.</li>
+  </ul>
+
+  <h3>Limites</h3>
+  <div class="card">
+    <p><strong>Données homogènes</strong> — Si les activités sont très similaires sur un axe (ex: toujours ~50m de D+), la dichotomie ne peut pas converger et tape dans les bornes (50 ou 500). Dans ce cas, le facteur n'est pas modifié et un avertissement s'affiche. Les valeurs par défaut restent appropriées car le facteur a de toute façon peu d'impact quand les données sont homogènes.</p>
+    <p><strong>Absence de FC</strong> — Le calibrage ne fonctionne qu'avec les activités ayant une FC enregistrée (minimum 4 requises). Sans FC, les valeurs par défaut sont conservées.</p>
+    <p><strong>Biais d'intensité</strong> — Le calibrage suppose un effort cardiaque comparable entre les deux groupes. Si les sorties courtes sont systématiquement faites à haute intensité et les longues en endurance, l'équilibrage compense aussi cette différence d'engagement.</p>
+  </div>
+
+  <!-- ─── Filtres ─── -->
+  <h2>Filtres</h2>
+
+  <table>
+    <thead>
+      <tr><th>Filtre</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Sports inclus</td><td>Sélection des types d'activités (Run, TrailRun, Ride, etc.)</td></tr>
+      <tr><td>Période</td><td>Plage de dates min/max</td></tr>
+      <tr><td>Distance</td><td>Distance min/max en km</td></tr>
+      <tr><td>D+</td><td>Dénivelé positif min/max en mètres</td></tr>
+      <tr><td>Fenêtre</td><td>Granularité temporelle des graphiques (jour, semaine, mois, trimestre, semestre, année)</td></tr>
+    </tbody>
+  </table>
+
+  <p>Tous les filtres sont sauvegardés automatiquement et restaurés au prochain lancement.</p>
+
+  <!-- ─── Graphiques ─── -->
+  <h2>Graphiques</h2>
+
+  <table>
+    <thead>
+      <tr><th>Graphique</th><th>Données</th><th>Type</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Performance</td><td>Score de perf moyen par période</td><td>Ligne</td></tr>
+      <tr><td>Charge</td><td>Charge cumulée par période</td><td>Barre</td></tr>
+      <tr><td>Distance & Dénivelé</td><td>Distance (axe gauche) et D+ (axe droit) par période</td><td>Barre double axe</td></tr>
+      <tr><td>Volume & Fréquence</td><td>Heures (barres) et nombre d'activités (ligne) par période</td><td>Mixte</td></tr>
+    </tbody>
+  </table>
+
+  <p>L'option "Min 0" force l'axe Y à démarrer à zéro. L'option "Tendances" ajoute une courbe de tendance lissée sur chaque graphique.</p>
+
+</div>
+
+</body>
+</html>

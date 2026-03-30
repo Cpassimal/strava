@@ -27,6 +27,7 @@
     <div class="top-bar-right">
       <button class="btn btn-refresh" id="btn-refresh" disabled>Rafraîchir</button>
       <button class="btn btn-settings" id="btn-settings">Paramètres</button>
+      <button class="btn btn-ghost btn-help" id="btn-help" title="Documentation">?</button>
     </div>
   </div>
 
@@ -88,8 +89,8 @@
     </div>
     <div class="kpi-divider"></div>
     <div class="kpi-row">
-      <div class="kpi-item"><p id="kpi-score">0</p><h3>Perf. Moy <sup>(1)</sup></h3></div>
-      <div class="kpi-item"><p id="kpi-avg-charge">0</p><h3>Charge Moy <sup>(2)</sup></h3></div>
+      <div class="kpi-item"><p id="kpi-score">0</p><h3>Perf. Moy</h3></div>
+      <div class="kpi-item"><p id="kpi-avg-charge">0</p><h3>Charge Moy</h3></div>
       <div class="kpi-item"><p id="kpi-median-dist">0</p><h3>Dist. Médiane</h3></div>
       <div class="kpi-item"><p id="kpi-median-elev">0</p><h3>D+ Médian</h3></div>
     </div>
@@ -161,10 +162,6 @@
     </div>
   </div>
 
-  <div class="footnotes" id="footnotes" style="display:none;">
-    <p><sup>(1)</sup> <strong>Perf.</strong> = (vitesse équivalente × bonus endurance) / effort cardiaque, où vitesse équivalente = (dist + D+/facteur D+) / heures, bonus endurance = 1 + dist/facteur dist., effort cardiaque = (FC - FC repos) / (FC max - FC repos). Sans FC, l'effort cardiaque est estimé à partir de la moyenne des activités avec FC, ou à 65% de la réserve cardiaque si aucune FC n'est disponible. Les activités exclues ne sont pas comptées.</p>
-    <p><sup>(2)</sup> <strong>Charge</strong> = dist + D+/facteur D+. Distance équivalente intégrant le dénivelé. Sommée par période sur le graphique.</p>
-  </div>
 </div>
 
 <!-- Settings Modal -->
