@@ -211,6 +211,21 @@
       </div>
     </div>
 
+    <div class="modal-section">
+      <h3>Import bulk (export Strava)</h3>
+      <p style="font-size:0.8rem; color:#666; margin-bottom:12px;">
+        Importez le fichier <code>activities.csv</code> issu de l'export de données Strava
+        (<a href="https://www.strava.com/athlete/delete_your_account" target="_blank">Télécharger vos données</a>).
+        Les activités déjà présentes (même ID) ne seront pas écrasées.
+      </p>
+      <div class="modal-actions">
+        <label class="btn btn-secondary" style="cursor:pointer;">
+          Importer activities.csv
+          <input type="file" id="btn-import-bulk" accept=".csv" style="display:none;">
+        </label>
+      </div>
+    </div>
+
     <div style="text-align:right; margin-top:10px;">
       <button class="btn btn-ghost" id="btn-close-settings">Fermer</button>
     </div>
@@ -225,8 +240,8 @@
     <div class="modal-section">
       <h3>Fréquence cardiaque</h3>
       <div class="perso-row">
-        <label>FC Repos <input type="number" id="fc-repos" value="46" min="30" max="100" style="width:70px;"> bpm</label>
-        <label>FC Max <input type="number" id="fc-max" value="200" min="100" max="230" style="width:70px;"> bpm</label>
+        <label>FC Repos <input type="number" id="fc-repos" value="60" min="30" max="100" style="width:70px;"> bpm</label>
+        <label>FC Max <input type="number" id="fc-max" value="180" min="100" max="230" style="width:70px;"> bpm</label>
       </div>
     </div>
 

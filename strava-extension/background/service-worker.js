@@ -44,6 +44,15 @@ async function handleMessage(msg) {
       await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: msg.activities });
       return { ok: true };
 
+    case 'bulkImportStrava': {
+      const existing = (await chrome.storage.local.get(STORAGE_KEYS.ACTIVITIES))[STORAGE_KEYS.ACTIVITIES] || [];
+      const existingIds = new Set(existing.map(a => String(a.ID)));
+      const toAdd = msg.activities.filter(a => !existingIds.has(String(a.ID)));
+      const merged = [...existing, ...toAdd];
+      await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: merged });
+      return { ok: true, added: toAdd.length, skipped: msg.activities.length - toAdd.length };
+    }
+
     default:
       throw new Error(`Action inconnue: ${msg.action}`);
   }

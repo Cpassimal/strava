@@ -252,6 +252,44 @@ function getWindowKey(date) {
   }
 }
 
+function generatePeriodKeys(firstKey, lastKey, wType) {
+  const keys = [];
+  let cursor = parsePeriodKey(firstKey, wType);
+  const end = parsePeriodKey(lastKey, wType);
+  if (!cursor || !end || !cursor.isValid || !end.isValid) return keys;
+  const maxIter = 5000; // safety guard
+  let i = 0;
+  while (cursor <= end && i++ < maxIter) {
+    keys.push(getWindowKey(cursor));
+    cursor = advancePeriod(cursor, wType);
+  }
+  return keys;
+}
+
+function parsePeriodKey(key, wType) {
+  switch (wType) {
+    case 'day': return DateTime.fromISO(key);
+    case 'week': return DateTime.fromISO(key);
+    case 'month': return DateTime.fromFormat(key, 'yyyy-MM');
+    case 'quarter': { const [y, t] = key.split('-T'); return DateTime.local(+y, (+t - 1) * 3 + 1, 1); }
+    case 'half': { const [y, s] = key.split('-S'); return DateTime.local(+y, (+s - 1) * 6 + 1, 1); }
+    case 'year': return DateTime.local(+key, 1, 1);
+    default: return DateTime.fromFormat(key, 'yyyy-MM');
+  }
+}
+
+function advancePeriod(dt, wType) {
+  switch (wType) {
+    case 'day': return dt.plus({ days: 1 });
+    case 'week': return dt.plus({ weeks: 1 });
+    case 'month': return dt.plus({ months: 1 });
+    case 'quarter': return dt.plus({ months: 3 });
+    case 'half': return dt.plus({ months: 6 });
+    case 'year': return dt.plus({ years: 1 });
+    default: return dt.plus({ months: 1 });
+  }
+}
+
 const windowLabels = {
   day: 'jour', week: 'semaine', month: 'mois',
   quarter: 'trimestre', half: 'semestre', year: 'année'
@@ -331,8 +369,8 @@ function getFilteredActivitiesForCalibration() {
 }
 
 function avgPerfForSplit(activities, splitKey, median, dplusFactor, distBonusFactor) {
-  const fcMax = parseInt(document.getElementById('fc-max').value) || 200;
-  const fcRepos = parseInt(document.getElementById('fc-repos').value) || 46;
+  const fcMax = parseInt(document.getElementById('fc-max').value) || 180;
+  const fcRepos = parseInt(document.getElementById('fc-repos').value) || 60;
   const below = [], above = [];
   activities.forEach(d => {
     const val = cleanNum(d[splitKey]);
@@ -608,8 +646,8 @@ function updateDashboard() {
   const allDistances = [];
   const allElevations = [];
 
-  const fcMax = parseInt(document.getElementById('fc-max').value) || 200;
-  const fcRepos = parseInt(document.getElementById('fc-repos').value) || 46;
+  const fcMax = parseInt(document.getElementById('fc-max').value) || 180;
+  const fcRepos = parseInt(document.getElementById('fc-repos').value) || 60;
   const dplusFactor = parseInt(document.getElementById('dplus-factor').value) || 185;
   const distBonusFactor = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
   const fallbackHrEffort = computeFallbackHrEffort(filtered, fcMax, fcRepos);
@@ -682,6 +720,15 @@ function updateDashboard() {
     : 0;
   document.getElementById('kpi-median-elev').textContent = medianElev > 0 ? Math.round(medianElev) + ' m' : '-';
 
+  // Fill empty periods between first and last keys
+  const existingKeys = Object.keys(groupedData).sort();
+  if (existingKeys.length >= 2) {
+    const emptyPeriod = { dist: 0, elev: 0, hours: 0, count: 0, perfSum: 0, perfCount: 0, chargeSum: 0 };
+    const allPeriodKeys = generatePeriodKeys(existingKeys[0], existingKeys[existingKeys.length - 1], currentWindow);
+    allPeriodKeys.forEach(k => {
+      if (!groupedData[k]) groupedData[k] = { ...emptyPeriod };
+    });
+  }
   const sortedKeys = Object.keys(groupedData).sort();
   const nbPeriods = sortedKeys.length;
   document.getElementById('kpi-avg-period').textContent = nbPeriods > 0
@@ -1064,6 +1111,124 @@ document.getElementById('btn-import-csv').addEventListener('change', async (e) =
   updateTopBar();
   e.target.value = '';
 });
+
+// Bulk import from Strava export
+document.getElementById('btn-import-bulk').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const activities = parseStravaBulkCSV(text);
+  if (activities.length === 0) { alert('Aucune activité compatible trouvée dans le fichier.'); e.target.value = ''; return; }
+  if (!confirm(`${activities.length} activités trouvées. Les activités déjà présentes ne seront pas écrasées. Continuer ?`)) { e.target.value = ''; return; }
+  showLoading('Import bulk en cours...');
+  await sendMessage({ action: 'bulkImportStrava', activities });
+  hideLoading();
+  alert(`Import terminé ! ${activities.length} activités traitées (les doublons ont été ignorés).`);
+  await loadData();
+  updateTopBar();
+  e.target.value = '';
+});
+
+function parseStravaBulkCSV(text) {
+  const rows = parseCSVRows(text);
+  if (rows.length < 2) return [];
+  const headers = rows[0];
+  const col = name => headers.indexOf(name);
+
+  // There are duplicate column names in the export (Distance appears twice, etc.)
+  // We need the second occurrence for the detailed numeric values
+  const iActivityId = col('Activity ID');
+  const iActivityDate = col('Activity Date');
+  const iActivityName = col('Activity Name');
+  const iActivityType = col('Activity Type');
+  // Moving Time, Distance, Elevation Gain are in the second block (after col 15)
+  const iMovingTime = headers.indexOf('Moving Time', 15);
+  const iDistance = headers.indexOf('Distance', 15);
+  const iElevGain = headers.indexOf('Elevation Gain', 15);
+  const iAvgHR = headers.indexOf('Average Heart Rate', 15);
+
+  const activities = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const id = r[iActivityId];
+    if (!id) continue;
+    const type = r[iActivityType] || '';
+    const distM = parseFloat(r[iDistance]) || 0;
+    const movingSec = parseFloat(r[iMovingTime]) || 0;
+    const elevGain = parseFloat(r[iElevGain]) || 0;
+    const avgHR = parseFloat(r[iAvgHR]) || 0;
+    const dateStr = r[iActivityDate] || '';
+
+    // Parse date "Jun 14, 2021, 6:50:44 AM" → ISO
+    const isoDate = parseStravaDate(dateStr);
+
+    const h = Math.floor(movingSec / 3600);
+    const m = Math.floor((movingSec % 3600) / 60);
+    const s = Math.round(movingSec % 60);
+    const duree = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+
+    activities.push({
+      ID: id,
+      Nom: r[iActivityName] || '',
+      Type: type,
+      Date: isoDate,
+      Distance_km: (distM / 1000).toFixed(2),
+      Duree: duree,
+      D_plus: elevGain.toFixed(1),
+      Lien_activite: `https://www.strava.com/activities/${id}`,
+      Moyenne_FC: avgHR || '',
+      Excluded: false
+    });
+  }
+  return activities;
+}
+
+function parseStravaDate(str) {
+  // "Jun 14, 2021, 6:50:44 AM" → ISO 8601
+  if (!str) return '';
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) return d.toISOString();
+  return str;
+}
+
+function parseCSVRows(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < text.length && text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        row.push(field);
+        field = '';
+      } else if (ch === '\n' || (ch === '\r' && text[i + 1] === '\n')) {
+        row.push(field);
+        field = '';
+        rows.push(row);
+        row = [];
+        if (ch === '\r') i++;
+      } else {
+        field += ch;
+      }
+    }
+  }
+  if (field || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
 
 document.getElementById('btn-clear-data').addEventListener('click', async () => {
   if (!confirm('Supprimer toutes les activités ? Cette action est irréversible.')) return;
