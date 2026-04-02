@@ -169,7 +169,7 @@ async function loadData() {
   }
 
   if (result.activities && result.activities.length > 0) {
-    rawData = result.activities.filter(row => row.ID && row.Moyenne_FC && parseFloat(row.Moyenne_FC) > 0);
+    rawData = result.activities.filter(row => row.ID);
     initFilters();
     // Defaults, then override with saved config
     document.getElementById('date-min').value = '2024-01-01';
@@ -203,7 +203,7 @@ async function doRefresh() {
   // Reload data
   if (result.activities) {
     const activeSports = [...document.querySelectorAll('#sport-selector .type-pill.active')].map(p => p.textContent);
-    rawData = result.activities.filter(row => row.ID && row.Moyenne_FC && parseFloat(row.Moyenne_FC) > 0);
+    rawData = result.activities.filter(row => row.ID);
     initFilters();
     // Restore previously active sports
     document.querySelectorAll('#sport-selector .type-pill').forEach(p => {
