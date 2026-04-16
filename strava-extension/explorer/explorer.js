@@ -1,4 +1,4 @@
-import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT, CACHE_TTL_MS } from '../lib/config.js';
+import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT, CACHE_TTL_MS, DETAIL_FRESH_MS } from '../lib/config.js';
 import { centerRadiusToBounds, subdivideBox, boundsToString, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace } from '../lib/geo.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -16,7 +16,8 @@ const state = {
   polylines: {},         // id → Leaflet polyline
   activeSegmentId: null,
   requestTimestamps: [],
-  totalRequests: 0,      // total API calls this session
+  totalRequests: 0,
+  lastExploreZone: null,  // { lat, lng, radius, type } of last explore
   currentSearchId: null,
   savedSearches: []
 };
@@ -267,6 +268,14 @@ function initEvents() {
     savedArrow.classList.toggle('open', !open);
   });
 
+  // Filters toggle
+  $('#filtersToggle').addEventListener('click', () => {
+    const body = $('#filtersBody');
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    $('#filtersArrow').classList.toggle('open', !open);
+  });
+
   $('#settingsBtn').addEventListener('click', () => $('#settingsModal').style.display = '');
   $('#modalClose').addEventListener('click', () => $('#settingsModal').style.display = 'none');
   $('#modalClearCache').addEventListener('click', async () => {
@@ -470,8 +479,16 @@ async function restoreSavedSearch(searchId) {
     state.allDetails[id] = entry.data;
   }
 
-  // Restore explore segments
+  // Restore explore segments + zone info for reuse
   state.exploreSegments = search.exploreSegments || [];
+  if (search.params.center) {
+    state.lastExploreZone = {
+      lat: search.params.center.lat,
+      lng: search.params.center.lng,
+      radius: search.params.radius,
+      type: search.params.activityType
+    };
+  }
 
   // Re-apply filters (using stored explore data + current detail cache)
   const filtered = applyFilters(state.exploreSegments);
@@ -644,6 +661,7 @@ function cleanTimestamps() {
 
 async function waitForSlot() {
   while (true) {
+    if (state.aborted) return;
     cleanTimestamps();
     if (state.requestTimestamps.length < RATE_LIMIT.MAX_REQUESTS) {
       state.requestTimestamps.push(Date.now());
@@ -719,6 +737,16 @@ async function saveCacheEntry(id, detail) {
 }
 
 // ── Search flow ──────────────────────────────────────────────────────────────
+function zoneMatchesCurrent() {
+  // Check if we already have explore data for the exact same zone
+  if (!state.lastExploreZone || state.exploreSegments.length === 0) return false;
+  const z = state.lastExploreZone;
+  return z.lat === state.center.lat
+    && z.lng === state.center.lng
+    && z.radius === state.radius
+    && z.type === activityType.value;
+}
+
 async function startSearch() {
   if (!state.center) {
     alert('Cliquez sur la carte pour definir le centre de recherche.');
@@ -744,16 +772,31 @@ async function startSearch() {
 
   try {
     const token = await getToken();
-
-    // Phase 1: Explore
-    setProgress(0, 'Exploration de la zone...');
-    const bounds = centerRadiusToBounds(state.center.lat, state.center.lng, state.radius);
     const type = activityType.value;
-    const rawSegments = await recursiveExplore(bounds, type, token);
+    let rawSegments;
 
-    if (state.aborted) { finishSearch('Recherche annulee.'); return; }
+    // Phase 1: Explore — skip if same zone
+    if (zoneMatchesCurrent()) {
+      rawSegments = state.exploreSegments;
+      setProgress(30, `Zone inchangee — ${rawSegments.length} segments en memoire, re-filtrage direct`);
+    } else {
+      setProgress(0, 'Exploration de la zone...');
+      const bounds = centerRadiusToBounds(state.center.lat, state.center.lng, state.radius);
+      rawSegments = await recursiveExplore(bounds, type, token);
 
-    // Pre-filter
+      if (state.aborted) { finishSearch('Recherche annulee.'); return; }
+
+      // Store the raw explore data (unfiltered) for reuse
+      state.exploreSegments = rawSegments;
+      state.lastExploreZone = {
+        lat: state.center.lat,
+        lng: state.center.lng,
+        radius: state.radius,
+        type
+      };
+    }
+
+    // Pre-filter on distance + grade (data available from explore)
     const gMin = parseFloat(gradeMin.value);
     const gMax = parseFloat(gradeMax.value);
     const preFiltered = rawSegments.filter(s => {
@@ -763,23 +806,40 @@ async function startSearch() {
       return true;
     });
 
-    setProgress(30, `${preFiltered.length} segments apres pre-filtre (${rawSegments.length} dans la zone)`);
+    const skipped = rawSegments.length - preFiltered.length;
+    setProgress(30, `${preFiltered.length} segments a detailler (${skipped} exclus par filtres, ${rawSegments.length} dans la zone)`);
 
     if (preFiltered.length === 0) {
-      finishSearch(`Aucun segment (${rawSegments.length} dans la zone, 0 apres filtres).`);
+      finishSearch(`Aucun segment dans les filtres (${rawSegments.length} dans la zone, 0 apres filtres distance/pente).`);
       return;
     }
 
-    // Phase 2: Fetch details
+    // Phase 2: Fetch details — re-fetch if stale (> 2h)
     const cache = await loadCache();
+    const now = Date.now();
     for (const [id, entry] of Object.entries(cache)) {
       state.allDetails[id] = entry.data;
     }
 
-    const needFetch = preFiltered.filter(s => !state.allDetails[s.id]);
-    const alreadyCached = preFiltered.length - needFetch.length;
+    const needFetch = preFiltered.filter(s => {
+      const entry = cache[s.id];
+      if (!entry) return true;                          // pas en cache
+      if (now - entry.fetchedAt > DETAIL_FRESH_MS) return true;  // perime
+      return false;
+    });
+    const fresh = preFiltered.length - needFetch.length;
+    const stale = needFetch.filter(s => cache[s.id]).length;
+    const missing = needFetch.length - stale;
 
-    setProgress(35, `${alreadyCached} en cache, ${needFetch.length} a recuperer...`);
+    if (needFetch.length === 0) {
+      setProgress(95, `${fresh} segments, tous frais — aucun appel`);
+    } else {
+      const parts = [];
+      if (fresh > 0) parts.push(`${fresh} frais`);
+      if (stale > 0) parts.push(`${stale} a rafraichir`);
+      if (missing > 0) parts.push(`${missing} nouveaux`);
+      setProgress(35, `Details: ${parts.join(', ')} — ${needFetch.length} appels`);
+    }
 
     for (let i = 0; i < needFetch.length; i++) {
       if (state.aborted) { finishSearch('Recherche annulee.'); return; }
@@ -800,12 +860,11 @@ async function startSearch() {
       updateRateInfo(`${state.totalRequests} requetes | ${state.requestTimestamps.length}/${RATE_LIMIT.MAX_REQUESTS} dans la fenetre 15min`);
     }
 
-    // Phase 3: Apply all filters & save
+    // Phase 3: Apply all filters (including KOM pace, D+ from details) & save
     const results = applyFilters(preFiltered);
     state.segments = results;
-    state.exploreSegments = preFiltered;
 
-    await saveCurrentSearch(preFiltered, results);
+    await saveCurrentSearch(rawSegments, results);
     saveLastSearch();
 
     results.forEach(seg => addSegmentToMap(seg));
@@ -813,11 +872,13 @@ async function startSearch() {
 
     if (results.length > 0) fitMapToSegments(results);
 
-    // Open saved searches panel
     savedList.style.display = '';
     savedArrow.classList.add('open');
 
-    finishSearch(`${results.length} segment(s) trouve(s) — recherche sauvegardee`);
+    const msg = state.totalRequests === 0
+      ? `${results.length} segment(s) — 0 requete (tout en cache)`
+      : `${results.length} segment(s) trouve(s) — ${state.totalRequests} requetes`;
+    finishSearch(msg);
 
   } catch (err) {
     finishSearch(`Erreur: ${err.message}`);

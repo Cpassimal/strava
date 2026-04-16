@@ -247,12 +247,40 @@ header h1 {
 .saved-item .saved-actions button.del:hover { color: #e74c3c; }
 
 .filters-panel {
-  padding: 12px;
+  padding: 0;
   border-bottom: 1px solid var(--border);
   overflow-y: auto;
   flex-shrink: 0;
   max-height: 55vh;
 }
+
+.filters-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.filters-header:hover { background: #fafafa; }
+.filters-header h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-light);
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+.filters-body {
+  padding: 0 12px;
+}
+
+.filters-panel .progress,
+.filters-panel .rate-info {
+  padding: 0 12px;
+}
+.filters-panel .progress { margin: 8px 12px; }
+.filters-panel .rate-info { margin: 0 12px 8px; }
 
 .filters-panel h2 {
   font-size: 12px;

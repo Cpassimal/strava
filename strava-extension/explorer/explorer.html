@@ -41,6 +41,11 @@
 
       <!-- Filters -->
       <div class="filters-panel">
+        <div class="filters-header" id="filtersToggle">
+          <h2>Filtres</h2>
+          <span class="toggle-arrow open" id="filtersArrow">&#9660;</span>
+        </div>
+        <div class="filters-body" id="filtersBody">
         <h2>Zone de recherche</h2>
         <div class="filter-row">
           <label>Latitude</label>
@@ -106,6 +111,7 @@
           <button id="searchBtn" class="primary">Rechercher</button>
           <button id="stopBtn" class="danger" style="display:none">Arreter</button>
         </div>
+        </div><!-- /filters-body -->
 
         <div id="progress" class="progress" style="display:none">
           <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>

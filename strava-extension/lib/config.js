@@ -39,4 +39,5 @@ export const RATE_LIMIT = {
   MAX_DAILY: 1000
 };
 
-export const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // cache max (prune)
+export const DETAIL_FRESH_MS = 2 * 60 * 60 * 1000;     // 2h — re-fetch si plus vieux
