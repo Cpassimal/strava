@@ -336,6 +336,97 @@ header h1 {
   text-align: right;
 }
 
+/* Dual-range slider (feasibility) */
+.range-dual {
+  position: relative;
+  height: 28px;
+  display: flex;
+  align-items: center;
+}
+.range-dual input[type="range"] {
+  position: absolute;
+  width: 100%;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
+  height: 4px;
+  margin: 0;
+}
+.range-dual input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--strava);
+  cursor: pointer;
+  pointer-events: all;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.range-dual input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--strava);
+  cursor: pointer;
+  pointer-events: all;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.range-dual input[type="range"]:first-child {
+  z-index: 2;
+}
+.range-dual input[type="range"]:last-child {
+  z-index: 1;
+}
+/* Track for the bottom slider only */
+.range-dual input[type="range"]:last-child::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #ddd;
+  border-radius: 2px;
+}
+.range-dual input[type="range"]:last-child::-moz-range-track {
+  height: 4px;
+  background: #ddd;
+  border-radius: 2px;
+}
+.range-dual input[type="range"]:first-child::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+.range-dual input[type="range"]:first-child::-moz-range-track {
+  height: 4px;
+  background: transparent;
+}
+
+.feasibility-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text-light);
+  margin-top: 2px;
+  padding: 0 2px;
+}
+
+.feasibility-info {
+  font-size: 11px;
+  color: var(--text-light);
+  margin-top: 4px;
+  font-style: italic;
+}
+
+#feasibilityRow.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+#feasibilityValues {
+  font-weight: 600;
+  color: var(--text);
+}
+
 .actions {
   display: flex;
   gap: 8px;
@@ -532,6 +623,17 @@ button.danger:hover { background: #c0392b; }
   font-weight: 700;
   color: var(--strava);
 }
+
+.segment-card .seg-kom .ratio-badge {
+  font-weight: 700;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.ratio-badge.easy { background: #d4edda; color: #155724; }
+.ratio-badge.realistic { background: #fff3cd; color: #856404; }
+.ratio-badge.ambitious { background: #ffe0cc; color: #b34700; }
+.ratio-badge.hard { background: #f8d7da; color: #721c24; }
 
 .no-results {
   text-align: center;

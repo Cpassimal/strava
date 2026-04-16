@@ -107,6 +107,22 @@
           </div>
         </div>
 
+        <h2>Faisabilite KOM</h2>
+        <div class="filter-row" id="feasibilityRow">
+          <label>Ratio <span id="feasibilityValues">0.50 — 2.00</span></label>
+          <div class="range-dual">
+            <input type="range" id="feasibilityMin" min="0.5" max="2.0" step="0.05" value="0.5">
+            <input type="range" id="feasibilityMax" min="0.5" max="2.0" step="0.05" value="2.0">
+          </div>
+          <div class="feasibility-labels">
+            <span>Battable</span>
+            <span>Realiste</span>
+            <span>Ambitieux</span>
+            <span>Hors portee</span>
+          </div>
+          <div class="feasibility-info" id="feasibilityInfo"></div>
+        </div>
+
         <div class="actions">
           <button id="searchBtn" class="primary">Rechercher</button>
           <button id="stopBtn" class="danger" style="display:none">Arreter</button>
@@ -133,6 +149,7 @@
               <option value="elevation">D+</option>
               <option value="grade">Pente</option>
               <option value="efforts">Efforts</option>
+              <option value="feasibility">Faisabilite</option>
               <option value="name">Nom</option>
             </select>
           </div>

@@ -1,5 +1,6 @@
 import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT, CACHE_TTL_MS, DETAIL_FRESH_MS } from '../lib/config.js';
 import { centerRadiusToBounds, subdivideBox, boundsToString, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace } from '../lib/geo.js';
+import { computeRunnerProfile, feasibilityRatio } from '../lib/gap.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
@@ -19,7 +20,8 @@ const state = {
   totalRequests: 0,
   lastExploreZone: null,  // { lat, lng, radius, type } of last explore
   currentSearchId: null,
-  savedSearches: []
+  savedSearches: [],
+  runnerProfile: null      // GAP profile computed from activities
 };
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
@@ -54,12 +56,18 @@ const geocodeResults = $('#geocodeResults');
 const savedList = $('#savedList');
 const savedCount = $('#savedCount');
 const savedArrow = $('#savedArrow');
+const feasibilityMinSlider = $('#feasibilityMin');
+const feasibilityMaxSlider = $('#feasibilityMax');
+const feasibilityValues = $('#feasibilityValues');
+const feasibilityRow = $('#feasibilityRow');
+const feasibilityInfo = $('#feasibilityInfo');
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 initMap();
 initEvents();
 initGeocode();
 loadStatus();
+loadRunnerProfile();
 loadSavedSearches().then(() => {
   loadLastSearch();
 });
@@ -260,6 +268,10 @@ function initEvents() {
   stopBtn.addEventListener('click', () => { state.aborted = true; });
   sortBy.addEventListener('change', () => renderResults(state.segments));
 
+  // Feasibility dual-range slider
+  feasibilityMinSlider.addEventListener('input', enforceFeasibilityRange);
+  feasibilityMaxSlider.addEventListener('input', enforceFeasibilityRange);
+
   // Saved searches toggle
   $('#savedToggle').addEventListener('click', () => {
     const list = savedList;
@@ -292,6 +304,50 @@ function applyCenterFromInputs() {
   const lat = parseFloat(centerLatInput.value);
   const lng = parseFloat(centerLngInput.value);
   if (!isNaN(lat) && !isNaN(lng)) setCenter(lat, lng);
+}
+
+// ── Feasibility slider ──────────────────────────────────────────────────────
+function enforceFeasibilityRange() {
+  let lo = parseFloat(feasibilityMinSlider.value);
+  let hi = parseFloat(feasibilityMaxSlider.value);
+  if (lo > hi) {
+    // swap: whichever the user just dragged, push the other
+    feasibilityMinSlider.value = hi;
+    feasibilityMaxSlider.value = lo;
+    [lo, hi] = [hi, lo];
+  }
+  feasibilityValues.textContent = `${lo.toFixed(2)} — ${hi.toFixed(2)}`;
+}
+
+// ── Runner profile ──────────────────────────────────────────────────────────
+async function loadRunnerProfile() {
+  try {
+    const data = await chrome.storage.local.get(STORAGE_KEYS.ACTIVITIES);
+    const activities = data[STORAGE_KEYS.ACTIVITIES];
+    if (!activities || activities.length === 0) {
+      feasibilityRow.classList.add('disabled');
+      feasibilityInfo.textContent = 'Synchronisez vos activites dans le Dashboard pour activer ce filtre.';
+      return;
+    }
+
+    state.runnerProfile = computeRunnerProfile(activities);
+
+    if (!state.runnerProfile) {
+      feasibilityRow.classList.add('disabled');
+      feasibilityInfo.textContent = 'Pas assez de courses pour calculer votre profil.';
+      return;
+    }
+
+    feasibilityRow.classList.remove('disabled');
+    const paceSecPerKm = 1000 / state.runnerProfile.gapSpeedRef;
+    const min = Math.floor(paceSecPerKm / 60);
+    const sec = Math.round(paceSecPerKm % 60);
+    feasibilityInfo.textContent = `Votre GAP ref: ${min}:${String(sec).padStart(2, '0')}/km (${state.runnerProfile.count} activites)`;
+  } catch (err) {
+    console.warn('Runner profile error:', err);
+    feasibilityRow.classList.add('disabled');
+    feasibilityInfo.textContent = 'Erreur de chargement du profil.';
+  }
 }
 
 // ── Status ───────────────────────────────────────────────────────────────────
@@ -377,7 +433,9 @@ function getCurrentParams() {
     elevMin: elevMin.value,
     elevMax: elevMax.value,
     gradeMin: gradeMin.value,
-    gradeMax: gradeMax.value
+    gradeMax: gradeMax.value,
+    feasibilityMin: feasibilityMinSlider.value,
+    feasibilityMax: feasibilityMaxSlider.value
   };
 }
 
@@ -402,6 +460,9 @@ function applyParams(params) {
   elevMax.value = params.elevMax || '';
   gradeMin.value = params.gradeMin || '';
   gradeMax.value = params.gradeMax || '';
+  if (params.feasibilityMin) feasibilityMinSlider.value = params.feasibilityMin;
+  if (params.feasibilityMax) feasibilityMaxSlider.value = params.feasibilityMax;
+  enforceFeasibilityRange();
 }
 
 // ── Render saved searches list ───────────────────────────────────────────────
@@ -632,6 +693,9 @@ function loadLastSearch() {
       if (last.filters.gradeMin) gradeMin.value = last.filters.gradeMin;
       if (last.filters.gradeMax) gradeMax.value = last.filters.gradeMax;
       if (last.filters.activityType) activityType.value = last.filters.activityType;
+      if (last.filters.feasibilityMin) feasibilityMinSlider.value = last.filters.feasibilityMin;
+      if (last.filters.feasibilityMax) feasibilityMaxSlider.value = last.filters.feasibilityMax;
+      enforceFeasibilityRange();
     }
   });
 }
@@ -647,7 +711,9 @@ function saveLastSearch() {
         paceMin: paceMin.value, paceMax: paceMax.value,
         elevMin: elevMin.value, elevMax: elevMax.value,
         gradeMin: gradeMin.value, gradeMax: gradeMax.value,
-        activityType: activityType.value
+        activityType: activityType.value,
+        feasibilityMin: feasibilityMinSlider.value,
+        feasibilityMax: feasibilityMaxSlider.value
       }
     }
   });
@@ -864,7 +930,16 @@ async function startSearch() {
     const results = applyFilters(preFiltered);
     state.segments = results;
 
-    await saveCurrentSearch(rawSegments, results);
+    if (state.currentSearchId) {
+      await updateSavedSearch(state.currentSearchId, {
+        params: getCurrentParams(),
+        exploreSegments: rawSegments,
+        filteredIds: results.map(s => s.id),
+        createdAt: Date.now()
+      });
+    } else {
+      await saveCurrentSearch(rawSegments, results);
+    }
     saveLastSearch();
 
     results.forEach(seg => addSegmentToMap(seg));
@@ -940,6 +1015,9 @@ function applyFilters(exploreSegs) {
   const pMax = parsePaceInput(paceMax.value);
   const eMin = parseFloat(elevMin.value);
   const eMax = parseFloat(elevMax.value);
+  const fMin = parseFloat(feasibilityMinSlider.value);
+  const fMax = parseFloat(feasibilityMaxSlider.value);
+  const useFeasibility = state.runnerProfile && (fMin > 0.5 || fMax < 2.0);
 
   return exploreSegs.filter(seg => {
     const detail = state.allDetails[seg.id];
@@ -956,6 +1034,15 @@ function applyFilters(exploreSegs) {
       const paceSecPerKm = komTime / (seg.distance / 1000);
       if (pMin != null && paceSecPerKm < pMin) return false;
       if (pMax != null && paceSecPerKm > pMax) return false;
+    }
+
+    if (useFeasibility && komTime != null && seg.distance > 0) {
+      const ratio = feasibilityRatio(
+        komTime, seg.distance, seg.avg_grade || 0, state.runnerProfile
+      );
+      if (ratio != null) {
+        if (ratio < fMin || ratio > fMax) return false;
+      }
     }
 
     return true;
@@ -1050,6 +1137,16 @@ function buildSegmentCard(seg, detail) {
     ? formatPace(komSec / (seg.distance / 1000))
     : '—';
 
+  let ratioHtml = '';
+  if (state.runnerProfile && komSec != null && seg.distance > 0) {
+    const ratio = feasibilityRatio(komSec, seg.distance, seg.avg_grade || 0, state.runnerProfile);
+    if (ratio != null) {
+      const label = ratio < 0.85 ? 'Battable' : ratio < 1.0 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
+      const cls = ratio < 0.85 ? 'easy' : ratio < 1.0 ? 'realistic' : ratio < 1.2 ? 'ambitious' : 'hard';
+      ratioHtml = `<span><span class="kom-label">Ratio</span> <span class="ratio-badge ${cls}">${ratio.toFixed(2)} — ${label}</span></span>`;
+    }
+  }
+
   card.innerHTML = `
     <div class="seg-name">
       <span>${esc(seg.name)}</span>
@@ -1068,6 +1165,7 @@ function buildSegmentCard(seg, detail) {
     <div class="seg-kom">
       <span><span class="kom-label">KOM</span> <span class="kom-value">${komTimeStr}</span></span>
       <span><span class="kom-label">Allure</span> <span class="kom-value">${komPace}</span></span>
+      ${ratioHtml}
     </div>
   `;
 
@@ -1112,6 +1210,11 @@ function sortSegments(segments) {
       case 'elevation': return (da.total_elevation_gain || 0) - (db.total_elevation_gain || 0);
       case 'grade': return (a.avg_grade || 0) - (b.avg_grade || 0);
       case 'efforts': return (db.effort_count || 0) - (da.effort_count || 0);
+      case 'feasibility': {
+        const ra = getSegmentRatio(a, da);
+        const rb = getSegmentRatio(b, db);
+        return ra - rb;
+      }
       case 'name': return (a.name || '').localeCompare(b.name || '');
       case 'kom_pace': {
         const ka = getKomSeconds(da);
@@ -1123,6 +1226,14 @@ function sortSegments(segments) {
       default: return 0;
     }
   });
+}
+
+function getSegmentRatio(seg, detail) {
+  if (!state.runnerProfile) return Infinity;
+  const komTime = getKomSeconds(detail);
+  if (komTime == null || seg.distance <= 0) return Infinity;
+  const ratio = feasibilityRatio(komTime, seg.distance, seg.avg_grade || 0, state.runnerProfile);
+  return ratio != null ? ratio : Infinity;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
