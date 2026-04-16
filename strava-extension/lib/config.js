@@ -16,5 +16,27 @@ export const STORAGE_KEYS = {
   STRAVA_EXPIRES_AT: 'strava_expires_at',
   STRAVA_ATHLETE: 'strava_athlete',
   ACTIVITIES: 'activities',
-  LAST_SYNC: 'last_sync'
+  LAST_SYNC: 'last_sync',
+  SEGMENTS_CACHE: 'segments_cache',
+  LAST_SEARCH: 'last_search',
+  SAVED_SEARCHES: 'saved_searches'
 };
+
+// Segment Explorer defaults
+export const SEGMENT_DEFAULTS = {
+  CENTER: { lat: 47.218, lng: -1.553 },  // Nantes
+  RADIUS_KM: 3,
+  MAX_RADIUS_KM: 10,
+  MIN_DISTANCE_M: 400,
+  MAX_DISTANCE_M: 5000,
+  ACTIVITY_TYPE: 'running'
+};
+
+export const RATE_LIMIT = {
+  MAX_REQUESTS: 95,
+  WINDOW_MS: 15 * 60 * 1000,
+  MAX_EXPLORE_CALLS: 200,
+  MAX_DAILY: 1000
+};
+
+export const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;

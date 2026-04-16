@@ -67,7 +67,7 @@ export async function authenticate() {
   return tokens.athlete;
 }
 
-async function ensureValidToken() {
+export async function ensureValidToken() {
   const stored = await getStoredTokens();
   if (!stored.accessToken) throw new Error('Non connecté à Strava');
 

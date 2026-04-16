@@ -1,4 +1,4 @@
-import { authenticate, fetchActivities, disconnectStrava, getStoredTokens } from '../lib/strava.js';
+import { authenticate, fetchActivities, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
 import { STORAGE_KEYS } from '../lib/config.js';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -52,6 +52,13 @@ async function handleMessage(msg) {
       await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: merged });
       return { ok: true, added: toAdd.length, skipped: msg.activities.length - toAdd.length };
     }
+
+    case 'getToken':
+      return { token: await ensureValidToken() };
+
+    case 'clearSegmentsCache':
+      await chrome.storage.local.remove(STORAGE_KEYS.SEGMENTS_CACHE);
+      return { ok: true };
 
     default:
       throw new Error(`Action inconnue: ${msg.action}`);

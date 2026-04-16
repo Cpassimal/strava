@@ -76,5 +76,6 @@ body {
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .btn-primary { background: #fc4c02; color: white; }
+.btn-segments { background: #2d6a4f; color: white; }
 .btn-secondary { background: #007aff; color: white; }
 .btn-ghost { background: transparent; color: #666; border: 1px solid #d2d2d7; }

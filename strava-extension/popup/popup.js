@@ -46,6 +46,11 @@ btnDashboard.addEventListener('click', () => {
   window.close();
 });
 
+document.getElementById('btn-segments').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('explorer/explorer.html') });
+  window.close();
+});
+
 btnRefresh.addEventListener('click', async () => {
   btnRefresh.disabled = true;
   refreshLabel.textContent = 'Synchronisation...';
