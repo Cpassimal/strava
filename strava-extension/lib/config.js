@@ -28,8 +28,7 @@ export const SEGMENT_DEFAULTS = {
   RADIUS_KM: 3,
   MAX_RADIUS_KM: 10,
   MIN_DISTANCE_M: 400,
-  MAX_DISTANCE_M: 5000,
-  ACTIVITY_TYPE: 'running'
+  MAX_DISTANCE_M: 5000
 };
 
 export const RATE_LIMIT = {

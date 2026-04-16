@@ -102,3 +102,12 @@ export function formatPace(secPerKm) {
   if (secPerKm == null || !isFinite(secPerKm)) return '—';
   return formatSeconds(secPerKm) + ' /km';
 }
+
+/**
+ * Format speed as "XX.X km/h" from seconds per km.
+ */
+export function formatSpeed(secPerKm) {
+  if (secPerKm == null || !isFinite(secPerKm) || secPerKm <= 0) return '—';
+  const kmh = 3600 / secPerKm;
+  return kmh.toFixed(1) + ' km/h';
+}

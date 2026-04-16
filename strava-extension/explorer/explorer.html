@@ -46,14 +46,24 @@
           <span class="toggle-arrow open" id="filtersArrow">&#9660;</span>
         </div>
         <div class="filters-body" id="filtersBody">
+        <div class="filter-row sport-selector">
+          <label class="sport-option">
+            <input type="radio" name="sport" value="running" checked>
+            <span class="sport-label">Course</span>
+          </label>
+          <label class="sport-option">
+            <input type="radio" name="sport" value="riding">
+            <span class="sport-label">Velo</span>
+          </label>
+        </div>
+
         <h2>Zone de recherche</h2>
         <div class="filter-row">
-          <label>Latitude</label>
-          <input type="number" id="centerLat" step="0.001" placeholder="47.218">
-        </div>
-        <div class="filter-row">
-          <label>Longitude</label>
-          <input type="number" id="centerLng" step="0.001" placeholder="-1.553">
+          <div class="dual-input">
+            <input type="number" id="centerLat" step="0.001" placeholder="Lat">
+            <span>,</span>
+            <input type="number" id="centerLng" step="0.001" placeholder="Lng">
+          </div>
         </div>
         <div class="filter-row">
           <label>Rayon (km)</label>
@@ -61,14 +71,6 @@
             <input type="range" id="radiusSlider" min="0.5" max="10" step="0.5" value="3">
             <span id="radiusValue">3 km</span>
           </div>
-        </div>
-
-        <h2>Sport</h2>
-        <div class="filter-row">
-          <select id="activityType">
-            <option value="running" selected>Course</option>
-            <option value="riding">Velo</option>
-          </select>
         </div>
 
         <h2>Filtres obligatoires</h2>
@@ -83,11 +85,16 @@
 
         <h2>Filtres optionnels</h2>
         <div class="filter-row">
-          <label>Allure KOM (min/km)</label>
-          <div class="dual-input">
+          <label id="speedFilterLabel">Allure KOM (min/km)</label>
+          <div class="dual-input" id="paceInputs">
             <input type="text" id="paceMin" placeholder="2:30" title="ex: 2:30">
             <span>—</span>
             <input type="text" id="paceMax" placeholder="6:00" title="ex: 6:00">
+          </div>
+          <div class="dual-input" id="speedInputs" style="display:none">
+            <input type="number" id="speedMin" placeholder="20" step="0.1" title="km/h min">
+            <span>—</span>
+            <input type="number" id="speedMax" placeholder="50" step="0.1" title="km/h max">
           </div>
         </div>
         <div class="filter-row">
@@ -145,7 +152,7 @@
             <label>Trier par</label>
             <select id="sortBy">
               <option value="distance">Distance</option>
-              <option value="kom_pace">Allure KOM</option>
+              <option value="kom_pace" id="sortKomPaceOption">Allure KOM</option>
               <option value="elevation">D+</option>
               <option value="grade">Pente</option>
               <option value="efforts">Efforts</option>

@@ -1,6 +1,6 @@
 import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT, CACHE_TTL_MS, DETAIL_FRESH_MS } from '../lib/config.js';
-import { centerRadiusToBounds, subdivideBox, boundsToString, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace } from '../lib/geo.js';
-import { computeRunnerProfile, feasibilityRatio } from '../lib/gap.js';
+import { centerRadiusToBounds, subdivideBox, boundsToString, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
+import { computeAthleteProfile, feasibilityRatio, SPORT_CONFIG } from '../lib/gap.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
@@ -21,7 +21,8 @@ const state = {
   lastExploreZone: null,  // { lat, lng, radius, type } of last explore
   currentSearchId: null,
   savedSearches: [],
-  runnerProfile: null      // GAP profile computed from activities
+  athleteProfile: null,    // GAP profile computed from activities
+  sport: 'running'         // 'running' or 'riding'
 };
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ const centerLatInput = $('#centerLat');
 const centerLngInput = $('#centerLng');
 const radiusSlider = $('#radiusSlider');
 const radiusValue = $('#radiusValue');
-const activityType = $('#activityType');
+const sportRadios = document.querySelectorAll('input[name="sport"]');
 const distMin = $('#distMin');
 const distMax = $('#distMax');
 const paceMin = $('#paceMin');
@@ -61,13 +62,54 @@ const feasibilityMaxSlider = $('#feasibilityMax');
 const feasibilityValues = $('#feasibilityValues');
 const feasibilityRow = $('#feasibilityRow');
 const feasibilityInfo = $('#feasibilityInfo');
+const speedFilterLabel = $('#speedFilterLabel');
+const paceInputs = $('#paceInputs');
+const speedInputs = $('#speedInputs');
+const speedMin = $('#speedMin');
+const speedMax = $('#speedMax');
+const sortKomPaceOption = $('#sortKomPaceOption');
+
+// ── Sport helpers ───────────────────────────────────────────────────────────
+function getSport() { return state.sport; }
+
+function getActivityType() {
+  return state.sport === 'riding' ? 'riding' : 'running';
+}
+
+function setSport(sport, resetView = true) {
+  if (resetView && sport !== state.sport) {
+    // Different sport → clear current results, they belong to the old sport
+    state.currentSearchId = null;
+    state.segments = [];
+    state.exploreSegments = [];
+    state.lastExploreZone = null;
+    clearSegmentsFromMap();
+    resultsList.innerHTML = '';
+    resultCount.textContent = '';
+    progressDiv.style.display = 'none';
+  }
+  state.sport = sport;
+  document.querySelector(`input[name="sport"][value="${sport}"]`).checked = true;
+  updateSportUI();
+  loadAthleteProfile();
+}
+
+function updateSportUI() {
+  const isRunning = state.sport === 'running';
+  // Filter label + inputs
+  speedFilterLabel.textContent = isRunning ? 'Allure KOM (min/km)' : 'Vitesse KOM (km/h)';
+  paceInputs.style.display = isRunning ? '' : 'none';
+  speedInputs.style.display = isRunning ? 'none' : '';
+  // Sort option
+  sortKomPaceOption.textContent = isRunning ? 'Allure KOM' : 'Vitesse KOM';
+}
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 initMap();
 initEvents();
 initGeocode();
 loadStatus();
-loadRunnerProfile();
+loadAthleteProfile();
 loadSavedSearches().then(() => {
   loadLastSearch();
 });
@@ -268,6 +310,11 @@ function initEvents() {
   stopBtn.addEventListener('click', () => { state.aborted = true; });
   sortBy.addEventListener('change', () => renderResults(state.segments));
 
+  // Sport toggle
+  sportRadios.forEach(r => r.addEventListener('change', (e) => {
+    setSport(e.target.value);
+  }));
+
   // Feasibility dual-range slider
   feasibilityMinSlider.addEventListener('input', enforceFeasibilityRange);
   feasibilityMaxSlider.addEventListener('input', enforceFeasibilityRange);
@@ -319,34 +366,45 @@ function enforceFeasibilityRange() {
   feasibilityValues.textContent = `${lo.toFixed(2)} — ${hi.toFixed(2)}`;
 }
 
-// ── Runner profile ──────────────────────────────────────────────────────────
-async function loadRunnerProfile() {
+// ── Athlete profile ─────────────────────────────────────────────────────────
+async function loadAthleteProfile() {
+  const sport = getSport();
+  const cfg = SPORT_CONFIG[sport];
+  const sportLabel = sport === 'running' ? 'courses' : 'sorties velo';
+
   try {
     const data = await chrome.storage.local.get(STORAGE_KEYS.ACTIVITIES);
     const activities = data[STORAGE_KEYS.ACTIVITIES];
     if (!activities || activities.length === 0) {
       feasibilityRow.classList.add('disabled');
       feasibilityInfo.textContent = 'Synchronisez vos activites dans le Dashboard pour activer ce filtre.';
+      state.athleteProfile = null;
       return;
     }
 
-    state.runnerProfile = computeRunnerProfile(activities);
+    state.athleteProfile = computeAthleteProfile(activities, sport);
 
-    if (!state.runnerProfile) {
+    if (!state.athleteProfile) {
       feasibilityRow.classList.add('disabled');
-      feasibilityInfo.textContent = 'Pas assez de courses pour calculer votre profil.';
+      feasibilityInfo.textContent = `Pas assez de ${sportLabel} pour calculer votre profil.`;
       return;
     }
 
     feasibilityRow.classList.remove('disabled');
-    const paceSecPerKm = 1000 / state.runnerProfile.gapSpeedRef;
-    const min = Math.floor(paceSecPerKm / 60);
-    const sec = Math.round(paceSecPerKm % 60);
-    feasibilityInfo.textContent = `Votre GAP ref: ${min}:${String(sec).padStart(2, '0')}/km (${state.runnerProfile.count} activites)`;
+    const secPerKm = 1000 / state.athleteProfile.gapSpeedRef;
+    if (cfg.unit === 'pace') {
+      const min = Math.floor(secPerKm / 60);
+      const sec = Math.round(secPerKm % 60);
+      feasibilityInfo.textContent = `Votre GAP ref: ${min}:${String(sec).padStart(2, '0')}/km (${state.athleteProfile.count} ${sportLabel})`;
+    } else {
+      const kmh = 3600 / secPerKm;
+      feasibilityInfo.textContent = `Votre GAP ref: ${kmh.toFixed(1)} km/h (${state.athleteProfile.count} ${sportLabel})`;
+    }
   } catch (err) {
-    console.warn('Runner profile error:', err);
+    console.warn('Athlete profile error:', err);
     feasibilityRow.classList.add('disabled');
     feasibilityInfo.textContent = 'Erreur de chargement du profil.';
+    state.athleteProfile = null;
   }
 }
 
@@ -422,14 +480,18 @@ async function deleteSavedSearch(searchId) {
 }
 
 function getCurrentParams() {
+  const sport = getSport();
   return {
     center: state.center ? { ...state.center } : null,
     radius: state.radius,
-    activityType: activityType.value,
+    sport,
+    activityType: getActivityType(),
     distMin: distMin.value,
     distMax: distMax.value,
-    paceMin: paceMin.value,
-    paceMax: paceMax.value,
+    paceMin: sport === 'running' ? paceMin.value : '',
+    paceMax: sport === 'running' ? paceMax.value : '',
+    speedMin: sport === 'riding' ? speedMin.value : '',
+    speedMax: sport === 'riding' ? speedMax.value : '',
     elevMin: elevMin.value,
     elevMax: elevMax.value,
     gradeMin: gradeMin.value,
@@ -451,11 +513,13 @@ function applyParams(params) {
     radiusValue.textContent = `${params.radius} km`;
     updateCircle();
   }
-  if (params.activityType) activityType.value = params.activityType;
+  if (params.sport) setSport(params.sport, false);
   if (params.distMin) distMin.value = params.distMin;
   if (params.distMax) distMax.value = params.distMax;
   paceMin.value = params.paceMin || '';
   paceMax.value = params.paceMax || '';
+  speedMin.value = params.speedMin || '';
+  speedMax.value = params.speedMax || '';
   elevMin.value = params.elevMin || '';
   elevMax.value = params.elevMax || '';
   gradeMin.value = params.gradeMin || '';
@@ -483,7 +547,11 @@ function renderSavedSearches() {
     const segCount = search.filteredIds ? search.filteredIds.length : 0;
     const date = new Date(search.createdAt).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' });
 
+    const isRiding = (search.params && search.params.sport === 'riding') || (search.params && search.params.activityType === 'riding');
+    const sportIcon = isRiding ? '\u{1F6B4}' : '\u{1F3C3}';
+
     item.innerHTML = `
+      <span class="saved-sport">${sportIcon}</span>
       <span class="saved-name" title="${esc(search.name)}">${esc(search.name)}</span>
       <span class="saved-meta">${segCount} seg</span>
       <div class="saved-actions">
@@ -530,6 +598,12 @@ function renderSavedSearches() {
 async function restoreSavedSearch(searchId) {
   const search = state.savedSearches.find(s => s.id === searchId);
   if (!search) return;
+
+  // Switch sport mode to match the saved search
+  // Fallback: old searches without sport field → derive from activityType
+  const savedSport = (search.params && search.params.sport)
+    || (search.params && search.params.activityType === 'riding' ? 'riding' : 'running');
+  setSport(savedSport, false);
 
   state.currentSearchId = searchId;
   applyParams(search.params);
@@ -594,7 +668,7 @@ async function refreshEntireSearch(searchId) {
   try {
     const token = await getToken();
     const bounds = centerRadiusToBounds(search.params.center.lat, search.params.center.lng, search.params.radius || 3);
-    const type = search.params.activityType || 'running';
+    const type = search.params.activityType;
 
     setProgress(0, 'Re-exploration de la zone...');
     const rawSegments = await recursiveExplore(bounds, type, token);
@@ -672,6 +746,7 @@ function loadLastSearch() {
     }
 
     // Otherwise just restore params
+    if (last.sport) setSport(last.sport, false);
     if (last.center) {
       setCenter(last.center.lat, last.center.lng);
       state.map.setView([last.center.lat, last.center.lng], 13);
@@ -688,11 +763,12 @@ function loadLastSearch() {
       if (last.filters.distMax) distMax.value = last.filters.distMax;
       if (last.filters.paceMin) paceMin.value = last.filters.paceMin;
       if (last.filters.paceMax) paceMax.value = last.filters.paceMax;
+      if (last.filters.speedMin) speedMin.value = last.filters.speedMin;
+      if (last.filters.speedMax) speedMax.value = last.filters.speedMax;
       if (last.filters.elevMin) elevMin.value = last.filters.elevMin;
       if (last.filters.elevMax) elevMax.value = last.filters.elevMax;
       if (last.filters.gradeMin) gradeMin.value = last.filters.gradeMin;
       if (last.filters.gradeMax) gradeMax.value = last.filters.gradeMax;
-      if (last.filters.activityType) activityType.value = last.filters.activityType;
       if (last.filters.feasibilityMin) feasibilityMinSlider.value = last.filters.feasibilityMin;
       if (last.filters.feasibilityMax) feasibilityMaxSlider.value = last.filters.feasibilityMax;
       enforceFeasibilityRange();
@@ -706,12 +782,13 @@ function saveLastSearch() {
       center: state.center,
       radius: state.radius,
       currentSearchId: state.currentSearchId,
+      sport: getSport(),
       filters: {
         distMin: distMin.value, distMax: distMax.value,
         paceMin: paceMin.value, paceMax: paceMax.value,
+        speedMin: speedMin.value, speedMax: speedMax.value,
         elevMin: elevMin.value, elevMax: elevMax.value,
         gradeMin: gradeMin.value, gradeMax: gradeMax.value,
-        activityType: activityType.value,
         feasibilityMin: feasibilityMinSlider.value,
         feasibilityMax: feasibilityMaxSlider.value
       }
@@ -810,7 +887,7 @@ function zoneMatchesCurrent() {
   return z.lat === state.center.lat
     && z.lng === state.center.lng
     && z.radius === state.radius
-    && z.type === activityType.value;
+    && z.type === getActivityType();
 }
 
 async function startSearch() {
@@ -838,7 +915,7 @@ async function startSearch() {
 
   try {
     const token = await getToken();
-    const type = activityType.value;
+    const type = getActivityType();
     let rawSegments;
 
     // Phase 1: Explore — skip if same zone
@@ -1011,13 +1088,38 @@ async function recursiveExplore(bounds, type, token) {
 }
 
 function applyFilters(exploreSegs) {
-  const pMin = parsePaceInput(paceMin.value);
-  const pMax = parsePaceInput(paceMax.value);
+  const sport = getSport();
   const eMin = parseFloat(elevMin.value);
   const eMax = parseFloat(elevMax.value);
   const fMin = parseFloat(feasibilityMinSlider.value);
   const fMax = parseFloat(feasibilityMaxSlider.value);
-  const useFeasibility = state.runnerProfile && (fMin > 0.5 || fMax < 2.0);
+  const useFeasibility = state.athleteProfile && (fMin > 0.5 || fMax < 2.0);
+
+  // Speed/pace filter: running uses pace (sec/km, lower = faster),
+  // riding uses speed (km/h, higher = faster)
+  let speedFilterFn = null;
+  if (sport === 'running') {
+    const pMin = parsePaceInput(paceMin.value);
+    const pMax = parsePaceInput(paceMax.value);
+    if (pMin != null || pMax != null) {
+      speedFilterFn = (secPerKm) => {
+        if (pMin != null && secPerKm < pMin) return false;
+        if (pMax != null && secPerKm > pMax) return false;
+        return true;
+      };
+    }
+  } else {
+    const sMin = parseFloat(speedMin.value);
+    const sMax = parseFloat(speedMax.value);
+    if (!isNaN(sMin) || !isNaN(sMax)) {
+      speedFilterFn = (secPerKm) => {
+        const kmh = 3600 / secPerKm;
+        if (!isNaN(sMin) && kmh < sMin) return false;
+        if (!isNaN(sMax) && kmh > sMax) return false;
+        return true;
+      };
+    }
+  }
 
   return exploreSegs.filter(seg => {
     const detail = state.allDetails[seg.id];
@@ -1030,15 +1132,14 @@ function applyFilters(exploreSegs) {
     }
 
     const komTime = getKomSeconds(detail);
-    if (komTime != null && seg.distance > 0) {
-      const paceSecPerKm = komTime / (seg.distance / 1000);
-      if (pMin != null && paceSecPerKm < pMin) return false;
-      if (pMax != null && paceSecPerKm > pMax) return false;
+    if (komTime != null && seg.distance > 0 && speedFilterFn) {
+      const secPerKm = komTime / (seg.distance / 1000);
+      if (!speedFilterFn(secPerKm)) return false;
     }
 
     if (useFeasibility && komTime != null && seg.distance > 0) {
       const ratio = feasibilityRatio(
-        komTime, seg.distance, seg.avg_grade || 0, state.runnerProfile
+        komTime, seg.distance, seg.avg_grade || 0, state.athleteProfile, sport
       );
       if (ratio != null) {
         if (ratio < fMin || ratio > fMax) return false;
@@ -1131,15 +1232,18 @@ function buildSegmentCard(seg, detail) {
   const efforts = detail.effort_count != null ? detail.effort_count.toLocaleString() : '—';
   const athletes = detail.athlete_count != null ? detail.athlete_count.toLocaleString() : '';
 
+  const sport = getSport();
   const komSec = getKomSeconds(detail);
   const komTimeStr = komSec != null ? formatSeconds(komSec) : '—';
-  const komPace = (komSec != null && seg.distance > 0)
-    ? formatPace(komSec / (seg.distance / 1000))
+  const secPerKm = (komSec != null && seg.distance > 0) ? komSec / (seg.distance / 1000) : null;
+  const komSpeedLabel = sport === 'running' ? 'Allure' : 'Vitesse';
+  const komSpeedStr = secPerKm != null
+    ? (sport === 'running' ? formatPace(secPerKm) : formatSpeed(secPerKm))
     : '—';
 
   let ratioHtml = '';
-  if (state.runnerProfile && komSec != null && seg.distance > 0) {
-    const ratio = feasibilityRatio(komSec, seg.distance, seg.avg_grade || 0, state.runnerProfile);
+  if (state.athleteProfile && komSec != null && seg.distance > 0) {
+    const ratio = feasibilityRatio(komSec, seg.distance, seg.avg_grade || 0, state.athleteProfile, sport);
     if (ratio != null) {
       const label = ratio < 0.85 ? 'Battable' : ratio < 1.0 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
       const cls = ratio < 0.85 ? 'easy' : ratio < 1.0 ? 'realistic' : ratio < 1.2 ? 'ambitious' : 'hard';
@@ -1164,7 +1268,7 @@ function buildSegmentCard(seg, detail) {
     </div>
     <div class="seg-kom">
       <span><span class="kom-label">KOM</span> <span class="kom-value">${komTimeStr}</span></span>
-      <span><span class="kom-label">Allure</span> <span class="kom-value">${komPace}</span></span>
+      <span><span class="kom-label">${komSpeedLabel}</span> <span class="kom-value">${komSpeedStr}</span></span>
       ${ratioHtml}
     </div>
   `;
@@ -1229,10 +1333,10 @@ function sortSegments(segments) {
 }
 
 function getSegmentRatio(seg, detail) {
-  if (!state.runnerProfile) return Infinity;
+  if (!state.athleteProfile) return Infinity;
   const komTime = getKomSeconds(detail);
   if (komTime == null || seg.distance <= 0) return Infinity;
-  const ratio = feasibilityRatio(komTime, seg.distance, seg.avg_grade || 0, state.runnerProfile);
+  const ratio = feasibilityRatio(komTime, seg.distance, seg.avg_grade || 0, state.athleteProfile, getSport());
   return ratio != null ? ratio : Infinity;
 }
 
