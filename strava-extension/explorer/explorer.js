@@ -216,7 +216,7 @@ function addSegmentToMap(seg) {
     if (komSec != null && seg.distance > 0) {
       const ratio = feasibilityRatio(komSec, seg.distance, seg.avg_grade || 0, state.athleteProfile, getSport());
       if (ratio != null) {
-        const label = ratio < 0.85 ? 'Battable' : ratio < 1.05 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
+        const label = ratio < 0.9 ? 'Battable' : ratio < 1.1 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
         tooltipText += ` — ${ratio.toFixed(2)} (${label})`;
       }
     }
@@ -550,9 +550,9 @@ function togglePickMode() {
 
 // ── Feasibility presets + slider ─────────────────────────────────────────────
 const FEAS_RANGES = {
-  battable:  { min: 0.50, max: 0.85 },
-  realiste:  { min: 0.85, max: 1.05 },
-  ambitieux: { min: 1.05, max: 1.2 }
+  battable:  { min: 0.50, max: 0.9 },
+  realiste:  { min: 0.9, max: 1.1 },
+  ambitieux: { min: 1.1, max: 1.2 }
 };
 
 function getActiveFeasPresets() {
@@ -1607,8 +1607,8 @@ function buildSegmentCard(seg, detail) {
   if (state.athleteProfile && komSec != null && seg.distance > 0) {
     const ratio = feasibilityRatio(komSec, seg.distance, seg.avg_grade || 0, state.athleteProfile, sport);
     if (ratio != null) {
-      const label = ratio < 0.85 ? 'Battable' : ratio < 1.05 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
-      const cls = ratio < 0.85 ? 'easy' : ratio < 1.05 ? 'realistic' : ratio < 1.2 ? 'ambitious' : 'hard';
+      const label = ratio < 0.9 ? 'Battable' : ratio < 1.1 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
+      const cls = ratio < 0.9 ? 'easy' : ratio < 1.1 ? 'realistic' : ratio < 1.2 ? 'ambitious' : 'hard';
       ratioHtml = `<span><span class="kom-label">Ratio</span> <span class="ratio-badge ${cls}">${ratio.toFixed(2)} — ${label}</span></span>`;
     }
   }
