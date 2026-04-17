@@ -37,6 +37,7 @@ const centerLngInput = $('#centerLng');
 const radiusSlider = $('#radiusSlider');
 const radiusValue = $('#radiusValue');
 const sportRadios = document.querySelectorAll('input[name="sport"]');
+const surfaceTypeSelect = document.querySelector('#surfaceType');
 const distMin = $('#distMin');
 const distMax = $('#distMax');
 const paceMin = $('#paceMin');
@@ -742,6 +743,7 @@ function getCurrentParams() {
     radius: state.radius,
     sport,
     activityType: getActivityType(),
+    surface: surfaceTypeSelect.value,
     distMin: distMin.value,
     distMax: distMax.value,
     paceMin: sport === 'running' ? paceMin.value : '',
@@ -774,6 +776,7 @@ function applyParams(params) {
     updateCircle();
   }
   if (params.sport) setSport(params.sport, false);
+  if (params.surface != null) surfaceTypeSelect.value = params.surface;
   if (params.distMin) distMin.value = params.distMin;
   if (params.distMax) distMax.value = params.distMax;
   paceMin.value = params.paceMin || '';
@@ -938,7 +941,7 @@ async function refreshEntireSearch(searchId) {
     const searchSport = search.params.sport || (search.params.activityType === 'riding' ? 'riding' : 'running');
 
     setProgress(0, 'Re-exploration via tiles...');
-    const allTileSegs = await fetchTileSegments(bounds, searchSport, radius);
+    const allTileSegs = await fetchTileSegments(bounds, searchSport, radius, null, search.params.surface || '0');
     if (state.aborted) { finishSearch('Annulee.'); return; }
 
     const center = search.params.center;
@@ -1010,6 +1013,7 @@ function loadLastSearch() {
 
     // Otherwise just restore params
     if (last.sport) setSport(last.sport, false);
+    if (last.surface != null) surfaceTypeSelect.value = last.surface;
     if (last.center) {
       setCenter(last.center.lat, last.center.lng);
       if (last.mapView) {
@@ -1068,6 +1072,7 @@ function saveLastSearch() {
       radius: state.radius,
       currentSearchId: state.currentSearchId,
       sport: getSport(),
+      surface: surfaceTypeSelect.value,
       mapView: view,
       filters: {
         distMin: distMin.value, distMax: distMax.value,
@@ -1270,7 +1275,7 @@ async function startSearch() {
       const allTileSegs = await fetchTileSegments(bounds, sport, state.radius, (done, total, segs) => {
         const pct = Math.round(15 * done / total);
         setProgress(pct, `Tiles ${done}/${total} — ${segs} segments`);
-      });
+      }, surfaceTypeSelect.value);
       if (state.aborted) { finishSearch('Recherche annulee.'); return; }
       // Filter by radius (tiles are square, segments may be outside the circle)
       tileSegments = allTileSegs.filter(seg => {
@@ -1298,7 +1303,8 @@ async function startSearch() {
       activeSearch.params.center.lat !== state.center.lat ||
       activeSearch.params.center.lng !== state.center.lng ||
       activeSearch.params.radius !== state.radius ||
-      (activeSearch.params.sport || 'running') !== sport
+      (activeSearch.params.sport || 'running') !== sport ||
+      (activeSearch.params.surface || '0') !== surfaceTypeSelect.value
     );
     if (zoneChanged || !activeSearch) {
       state.exploreSegments = [];
@@ -1454,7 +1460,8 @@ function persistCurrentFilters() {
       center: search.params.center,
       radius: search.params.radius,
       sport: search.params.sport,
-      activityType: search.params.activityType
+      activityType: search.params.activityType,
+      surface: search.params.surface
     };
     updateSavedSearch(state.currentSearchId, {
       params: newParams,

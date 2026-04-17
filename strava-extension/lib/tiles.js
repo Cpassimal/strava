@@ -55,10 +55,11 @@ const TILE_VERSION = 87224798;
  * @param {function} [onProgress]  Optional callback(done, total, segCount)
  * @returns {Promise<Array>}  Array of segment objects
  */
-export async function fetchTileSegments(bounds, sport, radiusKm, onProgress) {
+export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, surface) {
   const sportType = sport === 'riding' ? 'Ride' : 'Run';
   const zoom = zoomForRadius(radiusKm || 3);
   const tiles = getTilesForBounds(bounds.sw, bounds.ne, zoom);
+  const surfaceTypes = surface != null ? String(surface) : '0';
   const segmentsMap = new Map();
 
   for (let ti = 0; ti < tiles.length; ti++) {
@@ -68,7 +69,7 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress) {
       const params = new URLSearchParams({
         intent: 'popular',
         elevation_filter: 'all',
-        surface_types: '0',
+        surface_types: surfaceTypes,
         sport_types: sportType
       });
 
