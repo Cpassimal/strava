@@ -173,8 +173,10 @@ header h1 {
   padding: 10px 12px;
   cursor: pointer;
   user-select: none;
+  background: #eef2f7;
+  border-bottom: 1px solid #dde3ea;
 }
-.saved-header:hover { background: #fafafa; }
+.saved-header:hover { background: #e4ebf3; }
 .saved-header h2 {
   font-size: 12px;
   text-transform: uppercase;
@@ -267,8 +269,10 @@ header h1 {
   padding: 10px 12px;
   cursor: pointer;
   user-select: none;
+  background: #eef2f7;
+  border-bottom: 1px solid #dde3ea;
 }
-.filters-header:hover { background: #fafafa; }
+.filters-header:hover { background: #e4ebf3; }
 .filters-header h2 {
   font-size: 12px;
   text-transform: uppercase;
@@ -579,7 +583,8 @@ button.danger:hover { background: #c0392b; }
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  background: #eef2f7;
+  border-bottom: 1px solid #dde3ea;
 }
 
 .results-header h2 {
