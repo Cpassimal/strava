@@ -1282,7 +1282,7 @@ async function recursiveExplore(bounds, type, token) {
 }
 
 /** Re-apply filters on existing explore data and refresh display. */
-function liveRefilter() {
+async function liveRefilter() {
   if (state.exploreSegments.length === 0) return;
 
   const results = applyFilters(state.exploreSegments);
@@ -1292,6 +1292,34 @@ function liveRefilter() {
   results.forEach(seg => addSegmentToMap(seg));
   renderResults(results);
   persistCurrentFilters();
+
+  // Fetch missing details for newly visible segments
+  const missing = results.filter(s => !state.allDetails[s.id]);
+  if (missing.length > 0) {
+    try {
+      const token = await getToken();
+      for (let i = 0; i < missing.length; i++) {
+        if (state.aborted) break;
+        const seg = missing[i];
+        try {
+          const detail = await getSegmentDetail(seg.id, token);
+          state.allDetails[seg.id] = detail;
+          await saveCacheEntry(seg.id, detail);
+        } catch (err) {
+          console.warn(`Detail ${seg.id}:`, err.message);
+        }
+      }
+      // Re-render with fresh details
+      const updated = applyFilters(state.exploreSegments);
+      state.segments = updated;
+      clearSegmentsFromMap();
+      updated.forEach(seg => addSegmentToMap(seg));
+      renderResults(updated);
+      persistCurrentFilters();
+    } catch (err) {
+      console.warn('Live detail fetch error:', err);
+    }
+  }
 }
 
 /** Save current filter state to both lastSearch and the active saved search. */
@@ -1395,10 +1423,12 @@ function getKomSeconds(detail) {
     const sec = parseTimeToSeconds(komStr);
     if (sec != null) return sec;
   }
-  if (detail.athlete_segment_stats && detail.athlete_segment_stats.pr_elapsed_time) {
-    return detail.athlete_segment_stats.pr_elapsed_time;
-  }
   return null;
+}
+
+function getPrSeconds(detail) {
+  if (!detail || !detail.athlete_segment_stats) return null;
+  return detail.athlete_segment_stats.pr_elapsed_time || null;
 }
 
 // ── Refresh single segment ───────────────────────────────────────────────────
@@ -1445,11 +1475,9 @@ function renderResults(segments) {
 }
 
 function isUserKom(detail) {
-  if (!detail || !detail.athlete_segment_stats) return false;
-  const prTime = detail.athlete_segment_stats.pr_elapsed_time;
-  if (!prTime) return false;
   const komTime = getKomSeconds(detail);
-  if (!komTime) return false;
+  const prTime = getPrSeconds(detail);
+  if (!komTime || !prTime) return false;
   return prTime <= komTime;
 }
 
