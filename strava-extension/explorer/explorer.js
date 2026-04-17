@@ -1260,7 +1260,11 @@ async function recursiveExplore(bounds, type, token) {
       }
 
       if (segments.length >= 10) {
-        queue.push(...subdivideBox(box.sw, box.ne));
+        const boxW = box.ne.lng - box.sw.lng;
+        const boxH = box.ne.lat - box.sw.lat;
+        if (boxW > 0.001 && boxH > 0.001) {
+          queue.push(...subdivideBox(box.sw, box.ne));
+        }
       }
     } catch (err) {
       console.warn('Explore error:', err.message);
