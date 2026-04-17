@@ -77,6 +77,7 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
 
       const url = `https://www.strava.com/tiles/segments/${TILE_VERSION}/${tile.z}/${tile.x}/${tile.y}?${params}`;
       const resp = await fetch(url, {
+        credentials: 'include',
         headers: { 'Referer': 'https://www.strava.com/maps' }
       });
 

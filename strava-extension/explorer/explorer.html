@@ -188,6 +188,15 @@
     <div class="modal-content">
       <h2>Parametres</h2>
       <p class="modal-info">Les identifiants Strava sont partages avec le Dashboard.<br>Modifiez-les depuis les parametres du Dashboard.</p>
+      <div class="form-group">
+        <label for="mapBgSelect">Fond de carte</label>
+        <select id="mapBgSelect">
+          <option value="voyager">CARTO Voyager</option>
+          <option value="osm">OSM Standard</option>
+          <option value="opentopo">OpenTopoMap</option>
+          <option value="cyclosm">CyclOSM</option>
+        </select>
+      </div>
       <div id="cacheStats" class="modal-info"></div>
       <div class="modal-actions">
         <button id="modalClearCache">Vider le cache segments</button>

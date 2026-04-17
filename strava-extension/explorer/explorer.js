@@ -20,6 +20,7 @@ const state = {
   activeSegmentId: null,
   hoveredSegmentId: null,
   pickMode: true,
+  bgLayer: null,
   requestTimestamps: [],
   totalRequests: 0,
   currentSearchId: null,
@@ -123,6 +124,32 @@ loadSavedSearches().then(() => {
   loadLastSearch();
 });
 
+// ── Map backgrounds ──────────────────────────────────────────────────────────
+const MAP_BACKGROUNDS = {
+  voyager: {
+    name: 'CARTO Voyager',
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    options: { subdomains: 'abcd', maxZoom: 20, attribution: '&copy; OSM &copy; CARTO' }
+  },
+  osm: {
+    name: 'OSM Standard',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }
+  },
+  opentopo: {
+    name: 'OpenTopoMap',
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    options: { subdomains: 'abc', maxZoom: 17, attribution: '&copy; OpenTopoMap (CC-BY-SA)' }
+  },
+  cyclosm: {
+    name: 'CyclOSM',
+    url: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
+    options: { subdomains: 'abc', maxZoom: 20, attribution: '&copy; CyclOSM &copy; OSM France' }
+  }
+};
+
+const BG_STORAGE_KEY = 'explorer_map_bg';
+
 // ── Map ──────────────────────────────────────────────────────────────────────
 function initMap() {
   L.Icon.Default.imagePath = '../vendor/images/';
@@ -131,11 +158,13 @@ function initMap() {
     [SEGMENT_DEFAULTS.CENTER.lat, SEGMENT_DEFAULTS.CENTER.lng], 13
   );
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
-    subdomains: 'abcd',
-    maxZoom: 20
-  }).addTo(state.map);
+  // Restore saved background (default: voyager)
+  chrome.storage.local.get(BG_STORAGE_KEY, (data) => {
+    const key = data[BG_STORAGE_KEY] || 'voyager';
+    setMapBackground(key);
+    const select = document.querySelector('#mapBgSelect');
+    if (select) select.value = key;
+  });
 
   state.map.on('click', (e) => {
     if (state.pickMode) {
@@ -155,6 +184,14 @@ function initMap() {
 
   // Start in pick mode with crosshair
   mapEl.classList.add('pick-mode');
+}
+
+function setMapBackground(key) {
+  const bg = MAP_BACKGROUNDS[key] || MAP_BACKGROUNDS.voyager;
+  if (state.bgLayer) state.map.removeLayer(state.bgLayer);
+  state.bgLayer = L.tileLayer(bg.url, bg.options).addTo(state.map);
+  state.bgLayer.bringToBack();
+  chrome.storage.local.set({ [BG_STORAGE_KEY]: key });
 }
 
 function setCenter(lat, lng) {
@@ -513,6 +550,7 @@ function initEvents() {
     $('#settingsModal').style.display = '';
     updateCacheStats();
   });
+  $('#mapBgSelect').addEventListener('change', (e) => setMapBackground(e.target.value));
   $('#modalClose').addEventListener('click', () => $('#settingsModal').style.display = 'none');
   $('#modalClearCache').addEventListener('click', async () => {
     await chrome.runtime.sendMessage({ action: 'clearSegmentsCache' });
