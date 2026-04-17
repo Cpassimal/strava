@@ -38,6 +38,20 @@ export function haversineKm(lat1, lng1, lat2, lng2) {
 }
 
 /**
+ * Keep only segments whose start OR end point lies within `radiusKm` of the center.
+ * Used because tile queries return square regions — we want a circular mask.
+ */
+export function filterSegmentsByRadius(segments, centerLat, centerLng, radiusKm) {
+  return segments.filter(seg => {
+    const startIn = seg.start_latlng
+      && haversineKm(centerLat, centerLng, seg.start_latlng[0], seg.start_latlng[1]) <= radiusKm;
+    const endIn = seg.end_latlng
+      && haversineKm(centerLat, centerLng, seg.end_latlng[0], seg.end_latlng[1]) <= radiusKm;
+    return startIn || endIn;
+  });
+}
+
+/**
  * Decode a Google-encoded polyline string into [[lat, lng], ...].
  */
 export function decodePolyline(encoded) {

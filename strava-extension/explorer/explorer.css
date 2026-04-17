@@ -177,13 +177,6 @@ header h1 {
   border-bottom: 1px solid #dde3ea;
 }
 .saved-header:hover { background: #e4ebf3; }
-.saved-header h2 {
-  font-size: 12px;
-  text-transform: uppercase;
-  color: var(--text-light);
-  letter-spacing: 0.5px;
-  margin: 0;
-}
 .saved-header #savedCount {
   font-weight: 400;
 }
@@ -273,13 +266,6 @@ header h1 {
   border-bottom: 1px solid #dde3ea;
 }
 .filters-header:hover { background: #e4ebf3; }
-.filters-header h2 {
-  font-size: 12px;
-  text-transform: uppercase;
-  color: var(--text-light);
-  letter-spacing: 0.5px;
-  margin: 0;
-}
 
 .filters-body {
   padding: 0 12px;
@@ -292,13 +278,17 @@ header h1 {
 .filters-panel .progress { margin: 8px 12px; }
 .filters-panel .rate-info { margin: 0 12px 8px; }
 
+/* Shared h2 style for side-panel section headings. */
+.saved-header h2,
+.filters-header h2,
 .filters-panel h2 {
   font-size: 12px;
   text-transform: uppercase;
   color: var(--text-light);
   letter-spacing: 0.5px;
-  margin: 10px 0 6px;
+  margin: 0;
 }
+.filters-panel h2 { margin: 10px 0 6px; }
 .filters-panel h2:first-child { margin-top: 0; }
 
 .filter-row {

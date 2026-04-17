@@ -1,5 +1,5 @@
 import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT } from '../lib/config.js';
-import { centerRadiusToBounds, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
+import { centerRadiusToBounds, filterSegmentsByRadius, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
 import { computeAthleteProfile, feasibilityRatio, SPORT_CONFIG } from '../lib/gap.js';
 import { fetchTileSegments } from '../lib/tiles.js';
 
@@ -24,10 +24,31 @@ const state = {
   requestTimestamps: [],
   totalRequests: 0,
   currentSearchId: null,
+  refilterToken: 0,      // bump on each liveRefilter start, older runs abort
   savedSearches: [],
   athleteProfile: null,    // GAP profile computed from activities
   sport: 'running'         // 'running' or 'riding'
 };
+
+// ── Storage wrappers (always async, never throw) ─────────────────────────────
+async function storageGet(keys) {
+  try {
+    return await chrome.storage.local.get(keys);
+  } catch (err) {
+    console.error('[storage] get error:', err, keys);
+    return {};
+  }
+}
+
+async function storageSet(obj) {
+  try {
+    await chrome.storage.local.set(obj);
+    return true;
+  } catch (err) {
+    console.error('[storage] set error:', err, Object.keys(obj));
+    return false;
+  }
+}
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
@@ -89,10 +110,13 @@ function getActivityType() {
 
 function setSport(sport, resetView = true) {
   if (resetView && sport !== state.sport) {
-    // Different sport → clear current results, they belong to the old sport
+    // Different sport → clear current results, they belong to the old sport.
+    // Also purge in-memory detail cache: a segment's KOM belongs to one sport,
+    // keeping it across a sport switch leaks stale data into the new search.
     state.currentSearchId = null;
     state.segments = [];
     state.exploreSegments = [];
+    state.allDetails = {};
     clearSegmentsFromMap();
     resultsList.innerHTML = '';
     resultCount.textContent = '';
@@ -146,9 +170,10 @@ initEvents();
 initGeocode();
 loadStatus();
 loadAthleteProfile();
-loadSavedSearches().then(() => {
-  loadLastSearch();
-});
+(async () => {
+  await loadSavedSearches();
+  await loadLastSearch();
+})();
 
 // ── Map ──────────────────────────────────────────────────────────────────────
 function initMap() {
@@ -159,7 +184,7 @@ function initMap() {
   );
 
   // Restore saved background (default: voyager)
-  chrome.storage.local.get(BG_STORAGE_KEY, (data) => {
+  storageGet(BG_STORAGE_KEY).then((data) => {
     const key = data[BG_STORAGE_KEY] || 'voyager';
     setMapBackground(key);
     const select = document.querySelector('#mapBgSelect');
@@ -191,7 +216,7 @@ function setMapBackground(key) {
   if (state.bgLayer) state.map.removeLayer(state.bgLayer);
   state.bgLayer = L.tileLayer(bg.url, bg.options).addTo(state.map);
   state.bgLayer.bringToBack();
-  chrome.storage.local.set({ [BG_STORAGE_KEY]: key });
+  storageSet({ [BG_STORAGE_KEY]: key });
 }
 
 function setCenter(lat, lng) {
@@ -567,7 +592,7 @@ async function updateCacheStats() {
   const el = $('#cacheStats');
   if (!el) return;
   try {
-    const data = await chrome.storage.local.get([
+    const data = await storageGet([
       STORAGE_KEYS.SEGMENTS_CACHE,
       STORAGE_KEYS.SAVED_SEARCHES
     ]);
@@ -664,7 +689,7 @@ async function loadAthleteProfile() {
   const sportLabel = sport === 'running' ? 'courses' : 'sorties velo';
 
   try {
-    const data = await chrome.storage.local.get(STORAGE_KEYS.ACTIVITIES);
+    const data = await storageGet(STORAGE_KEYS.ACTIVITIES);
     const activities = data[STORAGE_KEYS.ACTIVITIES];
     if (!activities || activities.length === 0) {
       feasibilityRow.classList.add('disabled');
@@ -706,7 +731,7 @@ async function loadStatus() {
 
 // ── Saved searches persistence ───────────────────────────────────────────────
 async function loadSavedSearches() {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.SAVED_SEARCHES);
+  const data = await storageGet(STORAGE_KEYS.SAVED_SEARCHES);
   state.savedSearches = data[STORAGE_KEYS.SAVED_SEARCHES] || [];
   renderSavedSearches();
 }
@@ -720,11 +745,7 @@ async function persistSavedSearches() {
       return rest;
     })
   }));
-  try {
-    await chrome.storage.local.set({ [STORAGE_KEYS.SAVED_SEARCHES]: stripped });
-  } catch (err) {
-    console.error('Saved searches persist error:', err);
-  }
+  await storageSet({ [STORAGE_KEYS.SAVED_SEARCHES]: stripped });
 }
 
 function generateSearchName(params) {
@@ -903,53 +924,57 @@ async function restoreSavedSearch(searchId, preserveMapView) {
   const search = state.savedSearches.find(s => s.id === searchId);
   if (!search) return;
 
-  // Flush any pending debounced filter save before switching
+  // Flush any pending debounced filter save before switching — otherwise the
+  // previous search keeps the filter state of the one we're restoring into.
   if (state.currentSearchId && state.currentSearchId !== searchId) {
-    persistCurrentFilters();
+    await persistCurrentFilters();
   }
 
-  // Switch sport mode to match the saved search
-  // Fallback: old searches without sport field → derive from activityType
-  const savedSport = (search.params && search.params.sport)
-    || (search.params && search.params.activityType === 'riding' ? 'riding' : 'running');
-  setSport(savedSport, false);
+  // Block liveRefilter while we mutate exploreSegments/allDetails in bulk.
+  state.searching = true;
+  try {
+    // Switch sport mode to match the saved search
+    // Fallback: old searches without sport field → derive from activityType
+    const savedSport = (search.params && search.params.sport)
+      || (search.params && search.params.activityType === 'riding' ? 'riding' : 'running');
+    setSport(savedSport, false);
 
-  state.currentSearchId = searchId;
-  const paramsToApply = preserveMapView
-    ? { ...search.params, _skipMapView: true }
-    : search.params;
-  applyParams(paramsToApply);
-  if (preserveMapView) {
-    state.map.setView([preserveMapView.lat, preserveMapView.lng], preserveMapView.zoom);
+    state.currentSearchId = searchId;
+    const paramsToApply = preserveMapView
+      ? { ...search.params, _skipMapView: true }
+      : search.params;
+    applyParams(paramsToApply);
+    if (preserveMapView) {
+      state.map.setView([preserveMapView.lat, preserveMapView.lng], preserveMapView.zoom);
+    }
+
+    // Load detail cache into memory
+    const cache = await loadCache();
+    for (const [id, entry] of Object.entries(cache)) {
+      state.allDetails[id] = entry.data;
+    }
+
+    // Restore explore segments
+    state.exploreSegments = search.exploreSegments || [];
+
+    // Re-apply filters (using stored explore data + current detail cache)
+    const filtered = applyFilters(state.exploreSegments);
+    state.segments = filtered;
+
+    // Update filtered IDs in saved search (in case cache updated details)
+    search.filteredIds = filtered.map(s => s.id);
+    await persistSavedSearches();
+
+    renderSegmentList(filtered);
+    renderSavedSearches();
+
+    if (filtered.length > 0 && !preserveMapView) fitMapToSegments(filtered);
+
+    progressDiv.style.display = '';
+    setProgress(100, `${filtered.length} segment(s) — recherche restauree`);
+  } finally {
+    state.searching = false;
   }
-
-  // Load detail cache into memory
-  const cache = await loadCache();
-  for (const [id, entry] of Object.entries(cache)) {
-    state.allDetails[id] = entry.data;
-  }
-
-  // Restore explore segments
-  state.exploreSegments = search.exploreSegments || [];
-
-  // Re-apply filters (using stored explore data + current detail cache)
-  const filtered = applyFilters(state.exploreSegments);
-  state.segments = filtered;
-
-  // Update filtered IDs in saved search (in case cache updated details)
-  search.filteredIds = filtered.map(s => s.id);
-  await persistSavedSearches();
-
-  // Display
-  clearSegmentsFromMap();
-  filtered.forEach(seg => addSegmentToMap(seg));
-  renderResults(filtered);
-  renderSavedSearches();
-
-  if (filtered.length > 0 && !preserveMapView) fitMapToSegments(filtered);
-
-  progressDiv.style.display = '';
-  setProgress(100, `${filtered.length} segment(s) — recherche restauree`);
 }
 
 // ── Refresh entire search ────────────────────────────────────────────────────
@@ -989,11 +1014,7 @@ async function refreshEntireSearch(searchId) {
     if (state.aborted) { finishSearch('Annulee.'); return; }
 
     const center = search.params.center;
-    const tileSegments = allTileSegs.filter(seg => {
-      const startIn = seg.start_latlng && haversineKm(center.lat, center.lng, seg.start_latlng[0], seg.start_latlng[1]) <= radius;
-      const endIn = seg.end_latlng && haversineKm(center.lat, center.lng, seg.end_latlng[0], seg.end_latlng[1]) <= radius;
-      return startIn || endIn;
-    });
+    const tileSegments = filterSegmentsByRadius(allTileSegs, center.lat, center.lng, radius);
 
     const merged = mergeSegments(state.exploreSegments, tileSegments);
     state.exploreSegments = merged;
@@ -1028,8 +1049,7 @@ async function refreshEntireSearch(searchId) {
       createdAt: Date.now()
     });
 
-    results.forEach(seg => addSegmentToMap(seg));
-    renderResults(results);
+    renderSegmentList(results);
     if (results.length > 0) fitMapToSegments(results);
 
     finishSearch(`${results.length} segment(s) — recherche rafraichie`);
@@ -1041,76 +1061,74 @@ async function refreshEntireSearch(searchId) {
 }
 
 // ── Last search (just params, for fresh page) ────────────────────────────────
-function loadLastSearch() {
-  chrome.storage.local.get(STORAGE_KEYS.LAST_SEARCH, (data) => {
-    const last = data[STORAGE_KEYS.LAST_SEARCH];
-    if (!last) return;
+async function loadLastSearch() {
+  const data = await storageGet(STORAGE_KEYS.LAST_SEARCH);
+  const last = data[STORAGE_KEYS.LAST_SEARCH];
+  if (!last) return;
 
-    // If we have a currentSearchId from a saved search, restore it
-    if (last.currentSearchId) {
-      const exists = state.savedSearches.find(s => s.id === last.currentSearchId);
-      if (exists) {
-        restoreSavedSearch(last.currentSearchId, last.mapView);
-        return;
-      }
+  // If we have a currentSearchId from a saved search, restore it
+  if (last.currentSearchId) {
+    const exists = state.savedSearches.find(s => s.id === last.currentSearchId);
+    if (exists) {
+      await restoreSavedSearch(last.currentSearchId, last.mapView);
+      return;
     }
+  }
 
-    // Otherwise just restore params
-    if (last.sport) setSport(last.sport, false);
-    if (last.surface != null) surfaceTypeSelect.value = last.surface;
-    if (last.center) {
-      setCenter(last.center.lat, last.center.lng);
-      if (last.mapView) {
-        state.map.setView([last.mapView.lat, last.mapView.lng], last.mapView.zoom);
-      } else {
-        state.map.setView([last.center.lat, last.center.lng], 13);
-      }
-      mapHint.classList.add('hidden');
+  // Otherwise just restore params
+  if (last.sport) setSport(last.sport, false);
+  if (last.surface != null) surfaceTypeSelect.value = last.surface;
+  if (last.center) {
+    setCenter(last.center.lat, last.center.lng);
+    if (last.mapView) {
+      state.map.setView([last.mapView.lat, last.mapView.lng], last.mapView.zoom);
+    } else {
+      state.map.setView([last.center.lat, last.center.lng], 13);
     }
-    if (last.radius) {
-      state.radius = last.radius;
-      radiusSlider.value = last.radius;
-      radiusValue.textContent = `${last.radius} km`;
-      updateCircle();
+    mapHint.classList.add('hidden');
+  }
+  if (last.radius) {
+    state.radius = last.radius;
+    radiusSlider.value = last.radius;
+    radiusValue.textContent = `${last.radius} km`;
+    updateCircle();
+  }
+  if (last.filters) {
+    if (last.filters.distMin) distMin.value = last.filters.distMin;
+    if (last.filters.distMax) distMax.value = last.filters.distMax;
+    if (last.filters.paceMin) paceMin.value = last.filters.paceMin;
+    if (last.filters.paceMax) paceMax.value = last.filters.paceMax;
+    if (last.filters.speedMin) speedMin.value = last.filters.speedMin;
+    if (last.filters.speedMax) speedMax.value = last.filters.speedMax;
+    if (last.filters.elevMin) elevMin.value = last.filters.elevMin;
+    if (last.filters.elevMax) elevMax.value = last.filters.elevMax;
+    if (last.filters.gradeMin) gradeMin.value = last.filters.gradeMin;
+    if (last.filters.gradeMax) gradeMax.value = last.filters.gradeMax;
+    if (last.filters.feasPresets && last.filters.feasPresets.length > 0) {
+      setActiveFeasPresets(last.filters.feasPresets);
+    } else {
+      setActiveFeasPresets([]);
     }
-    if (last.filters) {
-      if (last.filters.distMin) distMin.value = last.filters.distMin;
-      if (last.filters.distMax) distMax.value = last.filters.distMax;
-      if (last.filters.paceMin) paceMin.value = last.filters.paceMin;
-      if (last.filters.paceMax) paceMax.value = last.filters.paceMax;
-      if (last.filters.speedMin) speedMin.value = last.filters.speedMin;
-      if (last.filters.speedMax) speedMax.value = last.filters.speedMax;
-      if (last.filters.elevMin) elevMin.value = last.filters.elevMin;
-      if (last.filters.elevMax) elevMax.value = last.filters.elevMax;
-      if (last.filters.gradeMin) gradeMin.value = last.filters.gradeMin;
-      if (last.filters.gradeMax) gradeMax.value = last.filters.gradeMax;
-      if (last.filters.feasPresets && last.filters.feasPresets.length > 0) {
-        setActiveFeasPresets(last.filters.feasPresets);
-      } else {
-        setActiveFeasPresets([]);
-      }
-      if (last.filters.sortBy) sortBy.value = last.filters.sortBy;
-    }
-  });
+    if (last.filters.sortBy) sortBy.value = last.filters.sortBy;
+  }
 }
 
-function saveMapView() {
+async function saveMapView() {
   if (!state.map) return;
   const c = state.map.getCenter();
   const z = state.map.getZoom();
-  chrome.storage.local.get(STORAGE_KEYS.LAST_SEARCH, (data) => {
-    const last = data[STORAGE_KEYS.LAST_SEARCH] || {};
-    last.mapView = { lat: c.lat, lng: c.lng, zoom: z };
-    chrome.storage.local.set({ [STORAGE_KEYS.LAST_SEARCH]: last });
-  });
+  const data = await storageGet(STORAGE_KEYS.LAST_SEARCH);
+  const last = data[STORAGE_KEYS.LAST_SEARCH] || {};
+  last.mapView = { lat: c.lat, lng: c.lng, zoom: z };
+  await storageSet({ [STORAGE_KEYS.LAST_SEARCH]: last });
 }
 
-function saveLastSearch() {
+async function saveLastSearch() {
   const view = state.map ? (() => {
     const c = state.map.getCenter();
     return { lat: c.lat, lng: c.lng, zoom: state.map.getZoom() };
   })() : null;
-  chrome.storage.local.set({
+  await storageSet({
     [STORAGE_KEYS.LAST_SEARCH]: {
       center: state.center,
       radius: state.radius,
@@ -1169,19 +1187,29 @@ async function getToken() {
   return resp.token;
 }
 
+const MAX_429_RETRIES = 4;   // 60s, 120s, 240s, 480s (cap ~8min)
+
 async function apiFetch(path, token) {
-  await waitForSlot();
-  const resp = await fetch(`${STRAVA_API_BASE}${path}`, {
-    headers: { 'Authorization': `Bearer ${token}` }
-  });
-  if (resp.status === 429) {
-    updateRateInfo('Rate limit Strava (429). Pause 60s...');
-    await sleep(60000);
+  for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+    if (state.aborted) throw new Error('aborted');
+    await waitForSlot();
+    const resp = await fetch(`${STRAVA_API_BASE}${path}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (resp.status !== 429) {
+      if (!resp.ok) throw new Error(`API ${resp.status}: ${path}`);
+      return resp.json();
+    }
+    if (attempt === MAX_429_RETRIES) {
+      throw new Error(`API 429 (rate limit Strava) — abandon apres ${MAX_429_RETRIES + 1} tentatives`);
+    }
+    const waitMs = 60000 * Math.pow(2, attempt);
+    const waitSec = Math.round(waitMs / 1000);
+    updateRateInfo(`Rate limit Strava (429). Pause ${waitSec}s (tentative ${attempt + 2}/${MAX_429_RETRIES + 1})...`);
+    await sleep(waitMs);
     state.requestTimestamps = [];
-    return apiFetch(path, token);
   }
-  if (!resp.ok) throw new Error(`API ${resp.status}: ${path}`);
-  return resp.json();
+  throw new Error('apiFetch: unreachable');
 }
 
 async function getSegmentDetail(id, token) {
@@ -1190,15 +1218,15 @@ async function getSegmentDetail(id, token) {
 
 // ── Cache ────────────────────────────────────────────────────────────────────
 async function loadCache() {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.SEGMENTS_CACHE);
+  const data = await storageGet(STORAGE_KEYS.SEGMENTS_CACHE);
   return data[STORAGE_KEYS.SEGMENTS_CACHE] || {};
 }
 
 async function saveCacheEntry(id, detail) {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.SEGMENTS_CACHE);
+  const data = await storageGet(STORAGE_KEYS.SEGMENTS_CACHE);
   const cache = data[STORAGE_KEYS.SEGMENTS_CACHE] || {};
   cache[id] = { data: detail, fetchedAt: Date.now() };
-  await chrome.storage.local.set({ [STORAGE_KEYS.SEGMENTS_CACHE]: cache });
+  await storageSet({ [STORAGE_KEYS.SEGMENTS_CACHE]: cache });
 }
 
 // ── Search flow ──────────────────────────────────────────────────────────────
@@ -1252,6 +1280,7 @@ async function addSegmentByUrl() {
 
   addSegBtn.disabled = true;
   addSegStatus.textContent = `Chargement du segment ${segId}...`;
+  state.searching = true;
 
   try {
     const token = await getToken();
@@ -1281,10 +1310,9 @@ async function addSegmentByUrl() {
     // Re-filter + render
     const results = applyFilters(state.exploreSegments);
     state.segments = results;
-    clearSegmentsFromMap();
-    results.forEach(s => addSegmentToMap(s));
-    renderResults(results);
-    persistCurrentFilters();
+    renderSegmentList(results);
+    state.searching = false;   // unlock before persist so persistCurrentFilters can run nested
+    await persistCurrentFilters();
 
     // Update saved search exploreSegments if active
     if (state.currentSearchId) {
@@ -1302,7 +1330,107 @@ async function addSegmentByUrl() {
     console.error(err);
   } finally {
     addSegBtn.disabled = false;
+    state.searching = false;
   }
+}
+
+/**
+ * Phase 1 — Discover segments via Strava's (undocumented) tile endpoint.
+ *  Returns { tileSegments, authFailed } — caller handles auth failure UX.
+ *  Returns empty list on any other tile error (logged, not thrown).
+ */
+async function discoverSegmentsFromTiles(sport, center, radius, surface) {
+  setProgress(0, 'Decouverte via tiles...');
+  const bounds = centerRadiusToBounds(center.lat, center.lng, radius);
+  try {
+    const tileResult = await fetchTileSegments(bounds, sport, radius, (done, total, segs) => {
+      const pct = Math.round(15 * done / total);
+      setProgress(pct, `Tiles ${done}/${total} — ${segs} segments`);
+    }, surface);
+    if (state.aborted) return { tileSegments: [], authFailed: false };
+
+    const authFailed = tileResult.stats.auth > 0 && tileResult.segments.length === 0;
+    if (authFailed) return { tileSegments: [], authFailed: true };
+
+    const tileSegments = filterSegmentsByRadius(tileResult.segments, center.lat, center.lng, radius);
+    setProgress(15, `${tileSegments.length} segments via tiles (${tileResult.segments.length} dans les tuiles)`);
+    return { tileSegments, authFailed: false };
+  } catch (err) {
+    console.warn('Tile discovery error:', err);
+    return { tileSegments: [], authFailed: false };
+  }
+}
+
+/**
+ * Phase 2 — Decide which segments need a detail re-fetch and run them.
+ *  Smart cache: re-fetch only if tile KOM differs from cached KOM (KOM changed
+ *  means leaderboard moved, so effort_count/elev may also be stale).
+ *  Writes to state.allDetails + persistent cache. Honors state.aborted.
+ */
+async function fetchSegmentDetails(segments, token) {
+  const cache = await loadCache();
+  for (const [id, entry] of Object.entries(cache)) {
+    state.allDetails[id] = entry.data;
+  }
+
+  const needFetch = segments.filter(s => {
+    const entry = cache[s.id];
+    if (!entry) return true;                                    // pas en cache
+    const cachedKom = getKomSeconds(entry.data);                // KOM en cache
+    const tileKom = s._tileData && s._tileData.komElapsedTime;  // KOM actuel via tiles
+    if (tileKom == null) return false;                          // pas d'info tile, garde cache
+    if (cachedKom == null) return true;                         // cache sans KOM, re-fetch
+    return tileKom !== cachedKom;                               // KOM changé → re-fetch
+  });
+  const fresh = segments.length - needFetch.length;
+  const komChanged = needFetch.filter(s => cache[s.id]).length;
+  const missing = needFetch.length - komChanged;
+
+  if (needFetch.length === 0) {
+    setProgress(95, `${fresh} segments, KOMs inchanges — aucun appel`);
+    return;
+  }
+  const parts = [];
+  if (fresh > 0) parts.push(`${fresh} inchanges`);
+  if (komChanged > 0) parts.push(`${komChanged} KOM change`);
+  if (missing > 0) parts.push(`${missing} nouveaux`);
+  setProgress(35, `Details: ${parts.join(', ')} — ${needFetch.length} appels`);
+
+  for (let i = 0; i < needFetch.length; i++) {
+    if (state.aborted) return;
+
+    const seg = needFetch[i];
+    const pct = 35 + Math.round(60 * (i + 1) / needFetch.length);
+    setProgress(pct, `Details ${i + 1}/${needFetch.length} — ${seg.name}`);
+
+    try {
+      const detail = await getSegmentDetail(seg.id, token);
+      state.allDetails[seg.id] = detail;
+      await saveCacheEntry(seg.id, detail);
+    } catch (err) {
+      console.warn(`Erreur segment ${seg.id}:`, err.message);
+    }
+
+    cleanTimestamps();
+    updateRateInfo(`${state.totalRequests} requetes | ${state.requestTimestamps.length}/${RATE_LIMIT.MAX_REQUESTS} dans la fenetre 15min`);
+  }
+}
+
+/**
+ * Zone params of the active saved search differ from what the user now has in
+ * the UI? If so, the accumulated segments no longer belong to this search.
+ */
+function zoneChangedVsCurrentSearch(sport) {
+  if (!state.currentSearchId) return true;
+  const active = state.savedSearches.find(s => s.id === state.currentSearchId);
+  if (!active) return true;
+  const p = active.params;
+  return !p.center
+    || p.center.lat !== state.center.lat
+    || p.center.lng !== state.center.lng
+    || p.radius !== state.radius
+    || (p.sport || 'running') !== sport
+    || (p.surface || '0') !== surfaceTypeSelect.value;
 }
 
 async function startSearch() {
@@ -1323,58 +1451,21 @@ async function startSearch() {
 
   try {
     const token = await getToken();
-    const type = getActivityType();
     const sport = getSport();
-    const bounds = centerRadiusToBounds(state.center.lat, state.center.lng, state.radius);
 
-    // Phase 1: Tile discovery (fast, no auth, exhaustive, with geometry)
-    setProgress(0, 'Decouverte via tiles...');
-    let tileSegments = [];
-    try {
-      const tileResult = await fetchTileSegments(bounds, sport, state.radius, (done, total, segs) => {
-        const pct = Math.round(15 * done / total);
-        setProgress(pct, `Tiles ${done}/${total} — ${segs} segments`);
-      }, surfaceTypeSelect.value);
-      if (state.aborted) { finishSearch('Recherche annulee.'); return; }
-
-      // Detect auth failure → explicit user message
-      if (tileResult.stats.auth > 0 && tileResult.segments.length === 0) {
-        finishSearch('');
-        showStravaLoginWarning();
-        return;
-      }
-      const allTileSegs = tileResult.segments;
-
-      // Filter by radius (tiles are square, segments may be outside the circle)
-      tileSegments = allTileSegs.filter(seg => {
-        const startIn = seg.start_latlng && haversineKm(
-          state.center.lat, state.center.lng, seg.start_latlng[0], seg.start_latlng[1]
-        ) <= state.radius;
-        const endIn = seg.end_latlng && haversineKm(
-          state.center.lat, state.center.lng, seg.end_latlng[0], seg.end_latlng[1]
-        ) <= state.radius;
-        return startIn || endIn;
-      });
-      setProgress(15, `${tileSegments.length} segments via tiles (${allTileSegs.length} dans les tuiles)`);
-    } catch (err) {
-      console.warn('Tile discovery error:', err);
+    // Phase 1: Tile discovery
+    const { tileSegments, authFailed } = await discoverSegmentsFromTiles(
+      sport, state.center, state.radius, surfaceTypeSelect.value
+    );
+    if (authFailed) {
+      finishSearch('');
+      showStravaLoginWarning();
+      return;
     }
-
     if (state.aborted) { finishSearch('Recherche annulee.'); return; }
 
-    // Detect zone change vs active saved search → reset accumulated segments
-    const activeSearch = state.currentSearchId
-      ? state.savedSearches.find(s => s.id === state.currentSearchId)
-      : null;
-    const zoneChanged = activeSearch && (
-      !activeSearch.params.center ||
-      activeSearch.params.center.lat !== state.center.lat ||
-      activeSearch.params.center.lng !== state.center.lng ||
-      activeSearch.params.radius !== state.radius ||
-      (activeSearch.params.sport || 'running') !== sport ||
-      (activeSearch.params.surface || '0') !== surfaceTypeSelect.value
-    );
-    if (zoneChanged || !activeSearch) {
+    // Reset accumulated segments when the zone no longer matches the active search
+    if (zoneChangedVsCurrentSearch(sport)) {
       state.exploreSegments = [];
       state.currentSearchId = null;
     }
@@ -1390,55 +1481,11 @@ async function startSearch() {
       return;
     }
 
-    // Phase 2: Fetch details — re-fetch only if KOM changed vs cached detail
-    const cache = await loadCache();
-    for (const [id, entry] of Object.entries(cache)) {
-      state.allDetails[id] = entry.data;
-    }
+    // Phase 2: Fetch details
+    await fetchSegmentDetails(merged, token);
+    if (state.aborted) { finishSearch('Recherche annulee.'); return; }
 
-    const needFetch = merged.filter(s => {
-      const entry = cache[s.id];
-      if (!entry) return true;                                  // pas en cache
-      const cachedKom = getKomSeconds(entry.data);              // KOM en cache
-      const tileKom = s._tileData && s._tileData.komElapsedTime; // KOM actuel via tiles
-      if (tileKom == null) return false;                         // pas d'info tile, garde cache
-      if (cachedKom == null) return true;                        // cache sans KOM, re-fetch
-      return tileKom !== cachedKom;                              // KOM changé → re-fetch
-    });
-    const fresh = merged.length - needFetch.length;
-    const komChanged = needFetch.filter(s => cache[s.id]).length;
-    const missing = needFetch.length - komChanged;
-
-    if (needFetch.length === 0) {
-      setProgress(95, `${fresh} segments, KOMs inchanges — aucun appel`);
-    } else {
-      const parts = [];
-      if (fresh > 0) parts.push(`${fresh} inchanges`);
-      if (komChanged > 0) parts.push(`${komChanged} KOM change`);
-      if (missing > 0) parts.push(`${missing} nouveaux`);
-      setProgress(35, `Details: ${parts.join(', ')} — ${needFetch.length} appels`);
-    }
-
-    for (let i = 0; i < needFetch.length; i++) {
-      if (state.aborted) { finishSearch('Recherche annulee.'); return; }
-
-      const seg = needFetch[i];
-      const pct = 35 + Math.round(60 * (i + 1) / needFetch.length);
-      setProgress(pct, `Details ${i + 1}/${needFetch.length} — ${seg.name}`);
-
-      try {
-        const detail = await getSegmentDetail(seg.id, token);
-        state.allDetails[seg.id] = detail;
-        await saveCacheEntry(seg.id, detail);
-      } catch (err) {
-        console.warn(`Erreur segment ${seg.id}:`, err.message);
-      }
-
-      cleanTimestamps();
-      updateRateInfo(`${state.totalRequests} requetes | ${state.requestTimestamps.length}/${RATE_LIMIT.MAX_REQUESTS} dans la fenetre 15min`);
-    }
-
-    // Phase 3: Apply all filters (including KOM pace, D+ from details) & save
+    // Phase 3: Filter, persist, render
     const results = applyFilters(merged);
     state.segments = results;
 
@@ -1452,10 +1499,9 @@ async function startSearch() {
     } else {
       await saveCurrentSearch(merged, results);
     }
-    saveLastSearch();
+    await saveLastSearch();
 
-    results.forEach(seg => addSegmentToMap(seg));
-    renderResults(results);
+    renderSegmentList(results);
 
     if (results.length > 0) fitMapToSegments(results);
 
@@ -1474,17 +1520,22 @@ async function startSearch() {
 }
 
 
-/** Re-apply filters on existing explore data and refresh display. */
+/** Re-apply filters on existing explore data and refresh display.
+ *  Guarded two ways:
+ *   - state.searching: bail out if a full search is writing to exploreSegments.
+ *   - refilterToken: a newer liveRefilter invalidates older ones so in-flight
+ *     detail fetches from a previous filter don't clobber the latest UI. */
 async function liveRefilter() {
+  if (state.searching) return;
   if (state.exploreSegments.length === 0) return;
 
+  const myToken = ++state.refilterToken;
   const results = applyFilters(state.exploreSegments);
   state.segments = results;
 
-  clearSegmentsFromMap();
-  results.forEach(seg => addSegmentToMap(seg));
-  renderResults(results);
-  persistCurrentFilters();
+  renderSegmentList(results);
+  await persistCurrentFilters();
+  if (myToken !== state.refilterToken || state.searching) return;
 
   // Fetch missing details for newly visible segments
   const missing = results.filter(s => !state.allDetails[s.id]);
@@ -1493,6 +1544,7 @@ async function liveRefilter() {
       const token = await getToken();
       for (let i = 0; i < missing.length; i++) {
         if (state.aborted) break;
+        if (myToken !== state.refilterToken || state.searching) return;
         const seg = missing[i];
         try {
           const detail = await getSegmentDetail(seg.id, token);
@@ -1502,13 +1554,12 @@ async function liveRefilter() {
           console.warn(`Detail ${seg.id}:`, err.message);
         }
       }
+      if (myToken !== state.refilterToken || state.searching) return;
       // Re-render with fresh details
       const updated = applyFilters(state.exploreSegments);
       state.segments = updated;
-      clearSegmentsFromMap();
-      updated.forEach(seg => addSegmentToMap(seg));
-      renderResults(updated);
-      persistCurrentFilters();
+      renderSegmentList(updated);
+      await persistCurrentFilters();
     } catch (err) {
       console.warn('Live detail fetch error:', err);
     }
@@ -1517,8 +1568,8 @@ async function liveRefilter() {
 
 /** Save current filter state to both lastSearch and the active saved search.
  *  Does NOT update the zone params (center/radius/sport) — zone is fixed per saved search. */
-function persistCurrentFilters() {
-  saveLastSearch();
+async function persistCurrentFilters() {
+  await saveLastSearch();
   if (state.currentSearchId) {
     const search = state.savedSearches.find(s => s.id === state.currentSearchId);
     if (!search) return;
@@ -1531,7 +1582,7 @@ function persistCurrentFilters() {
       activityType: search.params.activityType,
       surface: search.params.surface
     };
-    updateSavedSearch(state.currentSearchId, {
+    await updateSavedSearch(state.currentSearchId, {
       params: newParams,
       filteredIds: state.segments.map(s => s.id)
     });
@@ -1675,6 +1726,13 @@ async function refreshSingleSegment(segId) {
 }
 
 // ── Render results ───────────────────────────────────────────────────────────
+/** Clear current map segments, re-add from list, and render the sidebar list. */
+function renderSegmentList(segments) {
+  clearSegmentsFromMap();
+  segments.forEach(seg => addSegmentToMap(seg));
+  renderResults(segments);
+}
+
 function renderResults(segments) {
   const sorted = sortSegments([...segments]);
   resultCount.textContent = `(${sorted.length}/${state.exploreSegments.length})`;
