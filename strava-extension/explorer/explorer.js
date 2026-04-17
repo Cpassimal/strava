@@ -1007,7 +1007,7 @@ async function refreshEntireSearch(searchId) {
     const tileResult = await fetchTileSegments(bounds, searchSport, radius, null, search.params.surface || '0');
     if (tileResult.stats.auth > 0 && tileResult.segments.length === 0) {
       finishSearch('');
-      showStravaLoginWarning();
+      showStravaLoginWarning(await buildTileAuthMessage(tileResult.stats));
       return;
     }
     const allTileSegs = tileResult.segments;
@@ -1239,19 +1239,44 @@ function mergeSegments(existing, fresh) {
   return Array.from(map.values());
 }
 
-function showStravaLoginWarning() {
-  let banner = document.getElementById('stravaLoginBanner');
-  if (!banner) {
-    banner = document.createElement('div');
-    banner.id = 'stravaLoginBanner';
-    banner.className = 'strava-login-banner';
-    banner.innerHTML = `
-      <span>⚠ Connexion a <a href="https://www.strava.com/login" target="_blank" rel="noopener">strava.com</a> requise dans ce navigateur pour la decouverte de segments.</span>
-      <button class="close-btn" title="Fermer">&times;</button>
-    `;
-    banner.querySelector('.close-btn').addEventListener('click', () => banner.remove());
-    document.body.prepend(banner);
+/**
+ * Is a Strava session cookie present in this browser profile?
+ *  true  — cookie exists (user has a session somewhere in this profile)
+ *  false — no cookie (not logged in)
+ *  null  — lookup failed (permission missing or API error)
+ */
+async function hasStravaSessionCookie() {
+  if (!chrome.cookies || !chrome.cookies.get) return null;
+  try {
+    const cookie = await chrome.cookies.get({
+      url: 'https://www.strava.com',
+      name: '_strava4_session'
+    });
+    return !!cookie;
+  } catch (err) {
+    console.warn('chrome.cookies lookup failed:', err.message);
+    return null;
   }
+}
+
+function showStravaLoginWarning(messageHtml) {
+  const html = messageHtml || `Connexion a <a href="https://www.strava.com/login" target="_blank" rel="noopener">strava.com</a> requise dans ce navigateur pour la decouverte de segments.`;
+  const fullHtml = `⚠ ${html}`;
+  let banner = document.getElementById('stravaLoginBanner');
+  if (banner) {
+    const span = banner.querySelector('.banner-msg');
+    if (span) span.innerHTML = fullHtml;
+    return;
+  }
+  banner = document.createElement('div');
+  banner.id = 'stravaLoginBanner';
+  banner.className = 'strava-login-banner';
+  banner.innerHTML = `
+    <span class="banner-msg">${fullHtml}</span>
+    <button class="close-btn" title="Fermer">&times;</button>
+  `;
+  banner.querySelector('.close-btn').addEventListener('click', () => banner.remove());
+  document.body.prepend(banner);
 }
 
 /** Extract segment ID from a Strava URL or raw ID. */
@@ -1347,18 +1372,50 @@ async function discoverSegmentsFromTiles(sport, center, radius, surface) {
       const pct = Math.round(15 * done / total);
       setProgress(pct, `Tiles ${done}/${total} — ${segs} segments`);
     }, surface);
-    if (state.aborted) return { tileSegments: [], authFailed: false };
+    if (state.aborted) return { tileSegments: [], authFailed: false, stats: tileResult.stats };
 
-    const authFailed = tileResult.stats.auth > 0 && tileResult.segments.length === 0;
-    if (authFailed) return { tileSegments: [], authFailed: true };
+    // Auth considered failed when either the tile endpoint 401'd exhaustively,
+    // OR the /maps page itself was served as login (no tile version, no tiles tried).
+    const versionAuthFailed = tileResult.stats.versionAuthStatus && tileResult.stats.versionAuthStatus !== 'ok';
+    const authFailed = (tileResult.stats.auth > 0 && tileResult.segments.length === 0)
+      || (versionAuthFailed && tileResult.segments.length === 0);
+    if (authFailed) return { tileSegments: [], authFailed: true, stats: tileResult.stats };
 
     const tileSegments = filterSegmentsByRadius(tileResult.segments, center.lat, center.lng, radius);
     setProgress(15, `${tileSegments.length} segments via tiles (${tileResult.segments.length} dans les tuiles)`);
-    return { tileSegments, authFailed: false };
+    return { tileSegments, authFailed: false, stats: tileResult.stats };
   } catch (err) {
     console.warn('Tile discovery error:', err);
-    return { tileSegments: [], authFailed: false };
+    return { tileSegments: [], authFailed: false, stats: null };
   }
+}
+
+/** Build a user-facing message explaining why tile fetching failed.
+ *  Combines tile version auth status + browser cookie presence to differentiate
+ *  "not logged in" vs "logged in but cookies blocked for extension". */
+async function buildTileAuthMessage(stats) {
+  const versionStatus = stats && stats.versionAuthStatus;
+  if (versionStatus === 'formatChanged') {
+    return `Strava a change le format de sa page /maps. L'extension a besoin d'une mise a jour.`;
+  }
+  if (versionStatus === 'unknown') {
+    return `Impossible de contacter strava.com. Verifiez votre connexion reseau.`;
+  }
+
+  // versionStatus 'loggedOut' OR 'ok' (but tiles still 401) → same diagnosis flow.
+  const hasCookie = await hasStravaSessionCookie();
+  if (hasCookie === true) {
+    return `Cookies Strava detectes dans le navigateur mais bloques pour cette extension. `
+      + `Ouvre <code>chrome://settings/cookies</code>, ajoute <strong>strava.com</strong> aux sites autorises, `
+      + `ou desactive "Bloquer les cookies tiers". Puis recharge cette page.`;
+  }
+  if (hasCookie === false) {
+    return `Connexion a <a href="https://www.strava.com/login" target="_blank" rel="noopener">strava.com</a> `
+      + `requise dans ce navigateur pour la decouverte de segments.`;
+  }
+  // hasCookie === null (API unavailable)
+  return `Connexion a <a href="https://www.strava.com/login" target="_blank" rel="noopener">strava.com</a> `
+    + `requise dans ce navigateur pour la decouverte de segments.`;
 }
 
 /**
@@ -1454,12 +1511,12 @@ async function startSearch() {
     const sport = getSport();
 
     // Phase 1: Tile discovery
-    const { tileSegments, authFailed } = await discoverSegmentsFromTiles(
+    const { tileSegments, authFailed, stats } = await discoverSegmentsFromTiles(
       sport, state.center, state.radius, surfaceTypeSelect.value
     );
     if (authFailed) {
       finishSearch('');
-      showStravaLoginWarning();
+      showStravaLoginWarning(await buildTileAuthMessage(stats));
       return;
     }
     if (state.aborted) { finishSearch('Recherche annulee.'); return; }

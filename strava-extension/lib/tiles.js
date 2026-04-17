@@ -52,30 +52,55 @@ const VERSION_TTL_MS = 60 * 60 * 1000;   // re-fetch every hour
 /**
  * Fetch the current tile version from strava.com/maps.
  * Strava embeds it in the page JS, we grep for it.
+ *
+ * Returns { version, authStatus } — authStatus is one of:
+ *   'ok'            — /maps loaded authenticated, tile version extracted
+ *   'loggedOut'     — /maps redirected to /login (no session or cookies stripped)
+ *   'formatChanged' — /maps loaded OK but the tile version pattern is gone
+ *   'unknown'       — network error or non-ok status
  */
 async function getTileVersion() {
   const now = Date.now();
   if (cachedTileVersion && (now - tileVersionFetchedAt) < VERSION_TTL_MS) {
-    return cachedTileVersion;
+    return { version: cachedTileVersion, authStatus: 'ok' };
   }
   try {
     const resp = await fetch('https://www.strava.com/maps', {
       credentials: 'include',
       headers: { 'Referer': 'https://www.strava.com/' }
     });
-    if (!resp.ok) return DEFAULT_TILE_VERSION;
+
+    // Strava redirects anonymous /maps → /login (or /session/new).
+    // fetch follows redirects by default, so resp.url exposes the final URL.
+    const finalUrl = resp.url || '';
+    if (/\/(login|session|sign[_-]?in)/i.test(finalUrl)) {
+      return { version: DEFAULT_TILE_VERSION, authStatus: 'loggedOut' };
+    }
+    if (!resp.ok) {
+      return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
+    }
+
     const html = await resp.text();
-    // Look for /tiles/segments/<number>/ pattern in the page source
     const match = html.match(/\/tiles\/segments\/(\d+)\//);
     if (match) {
       cachedTileVersion = parseInt(match[1], 10);
       tileVersionFetchedAt = now;
-      return cachedTileVersion;
+      return { version: cachedTileVersion, authStatus: 'ok' };
     }
+
+    // 200 + no tile version: either Strava silently served the login page
+    // (cookies stripped mid-flight, no redirect), or the page format changed.
+    // Login-page markers: CSRF field + "sign in" copy.
+    const looksLikeLogin = /name="authenticity_token"/i.test(html)
+      && /(sign[_ -]?in|connecte[rz]|log[_ -]?in)/i.test(html);
+    if (looksLikeLogin) {
+      return { version: DEFAULT_TILE_VERSION, authStatus: 'loggedOut' };
+    }
+    return { version: DEFAULT_TILE_VERSION, authStatus: 'formatChanged' };
   } catch (err) {
     console.warn('getTileVersion error:', err.message);
+    return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
   }
-  return DEFAULT_TILE_VERSION;
 }
 
 /**
@@ -92,10 +117,10 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
   const zoom = zoomForRadius(radiusKm || 3);
   const tiles = getTilesForBounds(bounds.sw, bounds.ne, zoom);
   const surfaceTypes = surface != null ? String(surface) : '0';
-  const tileVersion = await getTileVersion();
+  const { version: tileVersion, authStatus: versionAuthStatus } = await getTileVersion();
   const segmentsMap = new Map();
 
-  const stats = { ok: 0, empty: 0, auth: 0, error: 0 };
+  const stats = { ok: 0, empty: 0, auth: 0, error: 0, versionAuthStatus };
 
   for (let ti = 0; ti < tiles.length; ti++) {
     const tile = tiles[ti];
