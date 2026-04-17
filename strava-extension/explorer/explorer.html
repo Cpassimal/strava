@@ -25,7 +25,7 @@
         <div id="geocodeResults" class="geocode-results"></div>
       </div>
       <div id="map"></div>
-      <div class="map-hint" id="mapHint">Cliquez sur la carte pour placer le centre de recherche</div>
+      <div class="map-hint" id="mapHint">Mode selection — cliquez sur la carte pour placer le centre</div>
     </div>
 
     <!-- Right: Filters + Results -->
@@ -57,7 +57,10 @@
           </label>
         </div>
 
-        <h2>Zone de recherche</h2>
+        <div class="zone-header">
+          <h2>Zone de recherche</h2>
+          <button id="zonePickBtn" class="zone-pick-btn active" title="Mode selection de zone">&#9678;</button>
+        </div>
         <div class="filter-row">
           <div class="dual-input">
             <input type="number" id="centerLat" step="0.001" placeholder="Lat">
@@ -116,16 +119,15 @@
 
         <h2>Faisabilite KOM</h2>
         <div class="filter-row" id="feasibilityRow">
-          <label>Ratio <span id="feasibilityValues">0.50 — 2.00</span></label>
-          <div class="range-dual">
-            <input type="range" id="feasibilityMin" min="0.5" max="2.0" step="0.05" value="0.5">
-            <input type="range" id="feasibilityMax" min="0.5" max="2.0" step="0.05" value="2.0">
+          <div class="feasibility-presets">
+            <button class="feas-preset" data-feas="battable">Battable</button>
+            <button class="feas-preset" data-feas="realiste">Realiste</button>
+            <button class="feas-preset" data-feas="ambitieux">Ambitieux</button>
           </div>
-          <div class="feasibility-labels">
-            <span>Battable</span>
-            <span>Realiste</span>
-            <span>Ambitieux</span>
-            <span>Hors portee</span>
+          <label>Ratio <span id="feasibilityValues">0.50 — 1.50</span></label>
+          <div class="range-dual">
+            <input type="range" id="feasibilityMin" min="0.5" max="1.5" step="0.05" value="0.5">
+            <input type="range" id="feasibilityMax" min="0.5" max="1.5" step="0.05" value="1.5">
           </div>
           <div class="feasibility-info" id="feasibilityInfo"></div>
         </div>

@@ -301,6 +301,32 @@ header h1 {
   margin-bottom: 8px;
 }
 
+.zone-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.zone-pick-btn {
+  padding: 2px 8px !important;
+  font-size: 16px !important;
+  line-height: 1;
+  border-radius: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: all 0.15s;
+}
+.zone-pick-btn.active {
+  opacity: 1;
+  background: var(--strava);
+  color: #fff;
+  border-color: var(--strava);
+}
+
+#map.pick-mode { cursor: crosshair; }
+
 .filter-row label {
   display: block;
   font-size: 12px;
@@ -412,39 +438,55 @@ header h1 {
   border: 2px solid #fff;
   box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
-.range-dual input[type="range"]:first-child {
-  z-index: 2;
-}
-.range-dual input[type="range"]:last-child {
-  z-index: 1;
-}
-/* Track for the bottom slider only */
+.range-dual input[type="range"]:first-child { z-index: 2; }
+.range-dual input[type="range"]:last-child { z-index: 1; }
 .range-dual input[type="range"]:last-child::-webkit-slider-runnable-track {
-  height: 4px;
-  background: #ddd;
-  border-radius: 2px;
+  height: 4px; background: #ddd; border-radius: 2px;
 }
 .range-dual input[type="range"]:last-child::-moz-range-track {
-  height: 4px;
-  background: #ddd;
-  border-radius: 2px;
+  height: 4px; background: #ddd; border-radius: 2px;
 }
 .range-dual input[type="range"]:first-child::-webkit-slider-runnable-track {
-  height: 4px;
-  background: transparent;
+  height: 4px; background: transparent;
 }
 .range-dual input[type="range"]:first-child::-moz-range-track {
-  height: 4px;
-  background: transparent;
+  height: 4px; background: transparent;
 }
 
-.feasibility-labels {
+#feasibilityValues {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Feasibility presets */
+.feasibility-presets {
   display: flex;
-  justify-content: space-between;
-  font-size: 9px;
-  color: var(--text-light);
-  margin-top: 2px;
-  padding: 0 2px;
+  gap: 6px;
+}
+
+.feas-preset {
+  flex: 1;
+  padding: 5px 4px !important;
+  font-size: 11px !important;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: #fafafa;
+  cursor: pointer;
+  transition: all 0.15s;
+  opacity: 0.6;
+}
+.feas-preset:hover { opacity: 0.85; }
+.feas-preset.active { opacity: 1; border-width: 2px; }
+
+.feas-preset[data-feas="battable"].active {
+  background: #d4edda; color: #155724; border-color: #155724;
+}
+.feas-preset[data-feas="realiste"].active {
+  background: #fff3cd; color: #856404; border-color: #856404;
+}
+.feas-preset[data-feas="ambitieux"].active {
+  background: #ffe0cc; color: #b34700; border-color: #b34700;
 }
 
 .feasibility-info {
@@ -457,11 +499,6 @@ header h1 {
 #feasibilityRow.disabled {
   opacity: 0.45;
   pointer-events: none;
-}
-
-#feasibilityValues {
-  font-weight: 600;
-  color: var(--text);
 }
 
 .actions {
@@ -591,6 +628,20 @@ button.danger:hover { background: #c0392b; }
 .segment-card.active {
   border-color: var(--strava);
   box-shadow: 0 1px 4px rgba(252, 76, 2, 0.15);
+}
+
+.segment-card.user-kom {
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  border-color: #f59e0b;
+}
+.segment-card.user-kom:hover,
+.segment-card.user-kom.active {
+  border-color: #d97706;
+  box-shadow: 0 1px 6px rgba(245, 158, 11, 0.3);
+}
+
+.kom-crown {
+  font-size: 14px;
 }
 
 .segment-card .seg-name {
@@ -737,6 +788,17 @@ button.danger:hover { background: #c0392b; }
   margin-top: 16px;
 }
 .modal-actions button { flex: 1; min-width: 100px; }
+
+/* Segment direction markers */
+.seg-end-marker {
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 3px rgba(0,0,0,0.4);
+  background:
+    repeating-conic-gradient(#333 0% 25%, #fff 0% 50%) 50% / 6px 6px;
+}
 
 /* Leaflet overrides */
 .leaflet-container { font-family: inherit; }

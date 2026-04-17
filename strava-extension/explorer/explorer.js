@@ -15,7 +15,10 @@ const state = {
   exploreSegments: [],   // raw explore data for current search
   allDetails: {},        // id → detail data (in-memory)
   polylines: {},         // id → Leaflet polyline
+  segMarkers: {},        // id → { start, end } direction markers
   activeSegmentId: null,
+  hoveredSegmentId: null,
+  pickMode: true,
   requestTimestamps: [],
   totalRequests: 0,
   lastExploreZone: null,  // { lat, lng, radius, type } of last explore
@@ -57,17 +60,20 @@ const geocodeResults = $('#geocodeResults');
 const savedList = $('#savedList');
 const savedCount = $('#savedCount');
 const savedArrow = $('#savedArrow');
+const feasibilityRow = $('#feasibilityRow');
+const feasibilityInfo = $('#feasibilityInfo');
+const feasPresetBtns = document.querySelectorAll('.feas-preset');
 const feasibilityMinSlider = $('#feasibilityMin');
 const feasibilityMaxSlider = $('#feasibilityMax');
 const feasibilityValues = $('#feasibilityValues');
-const feasibilityRow = $('#feasibilityRow');
-const feasibilityInfo = $('#feasibilityInfo');
 const speedFilterLabel = $('#speedFilterLabel');
 const paceInputs = $('#paceInputs');
 const speedInputs = $('#speedInputs');
 const speedMin = $('#speedMin');
 const speedMax = $('#speedMax');
 const sortKomPaceOption = $('#sortKomPaceOption');
+const zonePickBtn = $('#zonePickBtn');
+const mapEl = $('#map');
 
 // ── Sport helpers ───────────────────────────────────────────────────────────
 function getSport() { return state.sport; }
@@ -129,9 +135,16 @@ function initMap() {
   }).addTo(state.map);
 
   state.map.on('click', (e) => {
-    setCenter(e.latlng.lat, e.latlng.lng);
-    mapHint.classList.add('hidden');
+    if (state.pickMode) {
+      setCenter(e.latlng.lat, e.latlng.lng);
+      mapHint.classList.add('hidden');
+    } else {
+      unhighlightAll();
+    }
   });
+
+  // Start in pick mode with crosshair
+  mapEl.classList.add('pick-mode');
 }
 
 function setCenter(lat, lng) {
@@ -168,56 +181,162 @@ function updateCircle() {
 function clearSegmentsFromMap() {
   Object.values(state.polylines).forEach(pl => state.map.removeLayer(pl));
   state.polylines = {};
+  Object.values(state.segMarkers).forEach(m => {
+    state.map.removeLayer(m.start);
+    state.map.removeLayer(m.end);
+  });
+  state.segMarkers = {};
 }
 
 function addSegmentToMap(seg) {
   const points = seg.points ? decodePolyline(seg.points) : null;
   if (!points || points.length < 2) return;
 
+  const detail = state.allDetails[seg.id];
+  const userKom = isUserKom(detail);
+  const baseColor = userKom ? '#f59e0b' : '#FC4C02';
+
   const pl = L.polyline(points, {
-    color: '#FC4C02',
-    weight: 3,
-    opacity: 0.7
+    color: baseColor,
+    weight: userKom ? 4 : 3,
+    opacity: userKom ? 0.9 : 0.7
   }).addTo(state.map);
 
   pl.on('click', () => highlightSegment(seg.id));
-  pl.on('mouseover', () => {
-    if (state.activeSegmentId !== seg.id) {
-      pl.setStyle({ color: '#e02000', weight: 5, opacity: 1 });
-      pl.bringToFront();
-    }
-    const card = document.querySelector(`.segment-card[data-id="${seg.id}"]`);
-    if (card) card.classList.add('hover');
-  });
-  pl.on('mouseout', () => {
-    if (state.activeSegmentId !== seg.id) {
-      pl.setStyle({ color: '#FC4C02', weight: 3, opacity: 0.7 });
-    }
-    const card = document.querySelector(`.segment-card[data-id="${seg.id}"]`);
-    if (card) card.classList.remove('hover');
-  });
-  pl.bindTooltip(seg.name, { sticky: true });
+  pl.on('mouseover', () => hoverSegment(seg.id));
+  pl.on('mouseout', () => unhoverSegment(seg.id));
+  pl.bindTooltip((userKom ? '\u{1F451} ' : '') + seg.name, { sticky: true });
 
   state.polylines[seg.id] = pl;
+
+  // Direction markers (hidden by default, shown on focus/highlight)
+  const startPt = points[0];
+  const endPt = points[points.length - 1];
+
+  const startMarker = L.circleMarker(startPt, {
+    radius: 5, color: '#fff', fillColor: '#22c55e', fillOpacity: 1, weight: 2
+  });
+
+  const endIcon = L.divIcon({
+    className: 'seg-end-marker',
+    iconSize: [12, 12],
+    iconAnchor: [6, 6]
+  });
+  const endMarker = L.marker(endPt, { icon: endIcon, interactive: false });
+
+  state.segMarkers[seg.id] = { start: startMarker, end: endMarker };
 }
 
+function getSegmentBaseStyle(segId) {
+  const detail = state.allDetails[segId];
+  const userKom = isUserKom(detail);
+  return userKom
+    ? { color: '#f59e0b', weight: 4, opacity: 0.9 }
+    : { color: '#FC4C02', weight: 3, opacity: 0.7 };
+}
+
+/** Hover a segment: clean up previous hover, then focus this one. */
+function hoverSegment(id) {
+  if (state.hoveredSegmentId === id) return;
+  if (state.activeSegmentId === id) return;
+
+  // Clean up previous hover if any
+  if (state.hoveredSegmentId && state.hoveredSegmentId !== state.activeSegmentId) {
+    clearFocus(state.hoveredSegmentId);
+  }
+
+  state.hoveredSegmentId = id;
+  applyFocus(id);
+
+  const card = document.querySelector(`.segment-card[data-id="${id}"]`);
+  if (card) card.classList.add('hover');
+}
+
+/** Unhover a segment: only act if it's the currently hovered one. */
+function unhoverSegment(id) {
+  if (state.hoveredSegmentId !== id) return;
+
+  state.hoveredSegmentId = null;
+
+  if (id !== state.activeSegmentId) {
+    clearFocus(id);
+  }
+
+  const card = document.querySelector(`.segment-card[data-id="${id}"]`);
+  if (card) card.classList.remove('hover');
+}
+
+/** Visually focus a segment: bolden it, dim others, show markers. */
+function applyFocus(id) {
+  const hoverColor = isUserKom(state.allDetails[id]) ? '#d97706' : '#e02000';
+  for (const [segId, pl] of Object.entries(state.polylines)) {
+    if (segId == id) {
+      pl.setStyle({ color: hoverColor, weight: 5, opacity: 1 });
+      pl.bringToFront();
+    } else if (segId != state.activeSegmentId) {
+      const style = getSegmentBaseStyle(segId);
+      style.opacity = 0.3;
+      pl.setStyle(style);
+    }
+  }
+  if (state.segMarkers[id]) {
+    state.segMarkers[id].start.addTo(state.map);
+    state.segMarkers[id].end.addTo(state.map);
+  }
+}
+
+/** Remove focus from a segment: hide markers, restore base styles. */
+function clearFocus(id) {
+  if (state.segMarkers[id]) {
+    state.segMarkers[id].start.remove();
+    state.segMarkers[id].end.remove();
+  }
+  // Restore all non-active, non-hovered segments
+  for (const [segId, pl] of Object.entries(state.polylines)) {
+    if (segId == state.activeSegmentId) continue;
+    const style = getSegmentBaseStyle(segId);
+    if (state.activeSegmentId != null) style.opacity = 0.3;
+    pl.setStyle(style);
+  }
+}
+
+/** Pin a segment as active (click). */
 function highlightSegment(id) {
-  if (state.activeSegmentId && state.polylines[state.activeSegmentId]) {
-    state.polylines[state.activeSegmentId].setStyle({ color: '#FC4C02', weight: 3, opacity: 0.7 });
+  const prevId = state.activeSegmentId;
+
+  // Clean up previous active
+  if (prevId && prevId !== id) {
+    clearFocus(prevId);
   }
+
   document.querySelectorAll('.segment-card.active').forEach(el => el.classList.remove('active'));
-
   state.activeSegmentId = id;
+  state.hoveredSegmentId = null;
 
-  if (state.polylines[id]) {
-    state.polylines[id].setStyle({ color: '#e02000', weight: 5, opacity: 1 });
-    state.polylines[id].bringToFront();
-  }
+  applyFocus(id);
 
   const card = document.querySelector(`.segment-card[data-id="${id}"]`);
   if (card) {
     card.classList.add('active');
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+function unhighlightAll() {
+  const ids = [state.activeSegmentId, state.hoveredSegmentId].filter(Boolean);
+  for (const id of ids) {
+    if (state.segMarkers[id]) {
+      state.segMarkers[id].start.remove();
+      state.segMarkers[id].end.remove();
+    }
+  }
+  state.activeSegmentId = null;
+  state.hoveredSegmentId = null;
+  document.querySelectorAll('.segment-card.active, .segment-card.hover').forEach(el => {
+    el.classList.remove('active', 'hover');
+  });
+  for (const [segId, pl] of Object.entries(state.polylines)) {
+    pl.setStyle(getSegmentBaseStyle(segId));
   }
 }
 
@@ -306,18 +425,33 @@ function initEvents() {
   centerLatInput.addEventListener('change', applyCenterFromInputs);
   centerLngInput.addEventListener('change', applyCenterFromInputs);
 
+  // Zone pick mode toggle
+  zonePickBtn.addEventListener('click', togglePickMode);
+
   searchBtn.addEventListener('click', startSearch);
   stopBtn.addEventListener('click', () => { state.aborted = true; });
-  sortBy.addEventListener('change', () => renderResults(state.segments));
+  sortBy.addEventListener('change', () => { renderResults(state.segments); persistCurrentFilters(); });
 
   // Sport toggle
   sportRadios.forEach(r => r.addEventListener('change', (e) => {
     setSport(e.target.value);
   }));
 
-  // Feasibility dual-range slider
-  feasibilityMinSlider.addEventListener('input', enforceFeasibilityRange);
-  feasibilityMaxSlider.addEventListener('input', enforceFeasibilityRange);
+  // Live filter inputs → refilter on change
+  const refilterInputs = [distMin, distMax, paceMin, paceMax, speedMin, speedMax,
+    elevMin, elevMax, gradeMin, gradeMax];
+  refilterInputs.forEach(el => el.addEventListener('change', liveRefilter));
+
+  // Feasibility preset toggles → adjust slider + refilter
+  feasPresetBtns.forEach(btn => btn.addEventListener('click', () => {
+    btn.classList.toggle('active');
+    applyPresetsToSlider();
+    liveRefilter();
+  }));
+
+  // Slider manual drag → deactivate presets + refilter
+  feasibilityMinSlider.addEventListener('input', () => { onSliderManualChange(); liveRefilter(); });
+  feasibilityMaxSlider.addEventListener('input', () => { onSliderManualChange(); liveRefilter(); });
 
   // Saved searches toggle
   $('#savedToggle').addEventListener('click', () => {
@@ -353,16 +487,65 @@ function applyCenterFromInputs() {
   if (!isNaN(lat) && !isNaN(lng)) setCenter(lat, lng);
 }
 
-// ── Feasibility slider ──────────────────────────────────────────────────────
-function enforceFeasibilityRange() {
+function togglePickMode() {
+  state.pickMode = !state.pickMode;
+  zonePickBtn.classList.toggle('active', state.pickMode);
+  mapEl.classList.toggle('pick-mode', state.pickMode);
+  mapHint.classList.toggle('hidden', !state.pickMode || state.center != null);
+}
+
+// ── Feasibility presets + slider ─────────────────────────────────────────────
+const FEAS_RANGES = {
+  battable:  { min: 0.50, max: 0.85 },
+  realiste:  { min: 0.85, max: 1.05 },
+  ambitieux: { min: 1.05, max: 1.2 }
+};
+
+function getActiveFeasPresets() {
+  return Array.from(feasPresetBtns)
+    .filter(b => b.classList.contains('active'))
+    .map(b => b.dataset.feas);
+}
+
+function setActiveFeasPresets(presets) {
+  feasPresetBtns.forEach(b => {
+    b.classList.toggle('active', presets.includes(b.dataset.feas));
+  });
+  applyPresetsToSlider();
+}
+
+/** When presets change, compute the merged range and set the slider. */
+function applyPresetsToSlider() {
+  const active = getActiveFeasPresets();
+  if (active.length === 0) {
+    // No preset → full range
+    feasibilityMinSlider.value = 0.5;
+    feasibilityMaxSlider.value = 1.5;
+  } else {
+    const lo = Math.min(...active.map(p => FEAS_RANGES[p].min));
+    const hi = Math.max(...active.map(p => FEAS_RANGES[p].max));
+    feasibilityMinSlider.value = lo;
+    feasibilityMaxSlider.value = hi;
+  }
+  updateSliderLabel();
+}
+
+/** When slider is dragged manually, deactivate presets and update label. */
+function onSliderManualChange() {
   let lo = parseFloat(feasibilityMinSlider.value);
   let hi = parseFloat(feasibilityMaxSlider.value);
   if (lo > hi) {
-    // swap: whichever the user just dragged, push the other
     feasibilityMinSlider.value = hi;
     feasibilityMaxSlider.value = lo;
-    [lo, hi] = [hi, lo];
   }
+  // Deactivate presets — user is in manual mode
+  feasPresetBtns.forEach(b => b.classList.remove('active'));
+  updateSliderLabel();
+}
+
+function updateSliderLabel() {
+  const lo = parseFloat(feasibilityMinSlider.value);
+  const hi = parseFloat(feasibilityMaxSlider.value);
   feasibilityValues.textContent = `${lo.toFixed(2)} — ${hi.toFixed(2)}`;
 }
 
@@ -391,15 +574,7 @@ async function loadAthleteProfile() {
     }
 
     feasibilityRow.classList.remove('disabled');
-    const secPerKm = 1000 / state.athleteProfile.gapSpeedRef;
-    if (cfg.unit === 'pace') {
-      const min = Math.floor(secPerKm / 60);
-      const sec = Math.round(secPerKm % 60);
-      feasibilityInfo.textContent = `Votre GAP ref: ${min}:${String(sec).padStart(2, '0')}/km (${state.athleteProfile.count} ${sportLabel})`;
-    } else {
-      const kmh = 3600 / secPerKm;
-      feasibilityInfo.textContent = `Votre GAP ref: ${kmh.toFixed(1)} km/h (${state.athleteProfile.count} ${sportLabel})`;
-    }
+    feasibilityInfo.textContent = '';
   } catch (err) {
     console.warn('Athlete profile error:', err);
     feasibilityRow.classList.add('disabled');
@@ -496,8 +671,10 @@ function getCurrentParams() {
     elevMax: elevMax.value,
     gradeMin: gradeMin.value,
     gradeMax: gradeMax.value,
+    feasPresets: getActiveFeasPresets(),
     feasibilityMin: feasibilityMinSlider.value,
-    feasibilityMax: feasibilityMaxSlider.value
+    feasibilityMax: feasibilityMaxSlider.value,
+    sortBy: sortBy.value
   };
 }
 
@@ -524,9 +701,15 @@ function applyParams(params) {
   elevMax.value = params.elevMax || '';
   gradeMin.value = params.gradeMin || '';
   gradeMax.value = params.gradeMax || '';
-  if (params.feasibilityMin) feasibilityMinSlider.value = params.feasibilityMin;
-  if (params.feasibilityMax) feasibilityMaxSlider.value = params.feasibilityMax;
-  enforceFeasibilityRange();
+  if (params.feasPresets && params.feasPresets.length > 0) {
+    setActiveFeasPresets(params.feasPresets);
+  } else {
+    setActiveFeasPresets([]);
+    if (params.feasibilityMin) feasibilityMinSlider.value = params.feasibilityMin;
+    if (params.feasibilityMax) feasibilityMaxSlider.value = params.feasibilityMax;
+    updateSliderLabel();
+  }
+  if (params.sortBy) sortBy.value = params.sortBy;
 }
 
 // ── Render saved searches list ───────────────────────────────────────────────
@@ -707,13 +890,13 @@ async function refreshEntireSearch(searchId) {
       updateRateInfo(`${state.totalRequests} requetes | ${state.requestTimestamps.length}/${RATE_LIMIT.MAX_REQUESTS} dans la fenetre 15min`);
     }
 
-    const results = applyFilters(preFiltered);
+    const results = applyFilters(rawSegments);
     state.segments = results;
-    state.exploreSegments = preFiltered;
+    state.exploreSegments = rawSegments;
 
     // Update saved search
     await updateSavedSearch(searchId, {
-      exploreSegments: preFiltered,
+      exploreSegments: rawSegments,
       filteredIds: results.map(s => s.id),
       createdAt: Date.now()
     });
@@ -769,9 +952,15 @@ function loadLastSearch() {
       if (last.filters.elevMax) elevMax.value = last.filters.elevMax;
       if (last.filters.gradeMin) gradeMin.value = last.filters.gradeMin;
       if (last.filters.gradeMax) gradeMax.value = last.filters.gradeMax;
-      if (last.filters.feasibilityMin) feasibilityMinSlider.value = last.filters.feasibilityMin;
-      if (last.filters.feasibilityMax) feasibilityMaxSlider.value = last.filters.feasibilityMax;
-      enforceFeasibilityRange();
+      if (last.filters.feasPresets && last.filters.feasPresets.length > 0) {
+        setActiveFeasPresets(last.filters.feasPresets);
+      } else {
+        setActiveFeasPresets([]);
+        if (last.filters.feasibilityMin) feasibilityMinSlider.value = last.filters.feasibilityMin;
+        if (last.filters.feasibilityMax) feasibilityMaxSlider.value = last.filters.feasibilityMax;
+        updateSliderLabel();
+      }
+      if (last.filters.sortBy) sortBy.value = last.filters.sortBy;
     }
   });
 }
@@ -789,8 +978,10 @@ function saveLastSearch() {
         speedMin: speedMin.value, speedMax: speedMax.value,
         elevMin: elevMin.value, elevMax: elevMax.value,
         gradeMin: gradeMin.value, gradeMax: gradeMax.value,
+        feasPresets: getActiveFeasPresets(),
         feasibilityMin: feasibilityMinSlider.value,
-        feasibilityMax: feasibilityMaxSlider.value
+        feasibilityMax: feasibilityMaxSlider.value,
+        sortBy: sortBy.value
       }
     }
   });
@@ -1087,13 +1278,37 @@ async function recursiveExplore(bounds, type, token) {
   return Array.from(allSegments.values());
 }
 
+/** Re-apply filters on existing explore data and refresh display. */
+function liveRefilter() {
+  if (state.exploreSegments.length === 0) return;
+
+  const results = applyFilters(state.exploreSegments);
+  state.segments = results;
+
+  clearSegmentsFromMap();
+  results.forEach(seg => addSegmentToMap(seg));
+  renderResults(results);
+  persistCurrentFilters();
+}
+
+/** Save current filter state to both lastSearch and the active saved search. */
+function persistCurrentFilters() {
+  saveLastSearch();
+  if (state.currentSearchId) {
+    updateSavedSearch(state.currentSearchId, {
+      params: getCurrentParams(),
+      filteredIds: state.segments.map(s => s.id)
+    });
+  }
+}
+
 function applyFilters(exploreSegs) {
   const sport = getSport();
   const eMin = parseFloat(elevMin.value);
   const eMax = parseFloat(elevMax.value);
   const fMin = parseFloat(feasibilityMinSlider.value);
   const fMax = parseFloat(feasibilityMaxSlider.value);
-  const useFeasibility = state.athleteProfile && (fMin > 0.5 || fMax < 2.0);
+  const useFeasibility = state.athleteProfile && (fMin > 0.5 || fMax < 1.5);
 
   // Speed/pace filter: running uses pace (sec/km, lower = faster),
   // riding uses speed (km/h, higher = faster)
@@ -1121,7 +1336,18 @@ function applyFilters(exploreSegs) {
     }
   }
 
+  const dmn = parseFloat(distMin.value);
+  const dmx = parseFloat(distMax.value);
+  const gMin = parseFloat(gradeMin.value);
+  const gMax = parseFloat(gradeMax.value);
+
   return exploreSegs.filter(seg => {
+    // Distance + grade (available from explore data)
+    if (!isNaN(dmn) && seg.distance < dmn) return false;
+    if (!isNaN(dmx) && seg.distance > dmx) return false;
+    if (!isNaN(gMin) && seg.avg_grade < gMin) return false;
+    if (!isNaN(gMax) && seg.avg_grade > gMax) return false;
+
     const detail = state.allDetails[seg.id];
     if (!detail) return true;
 
@@ -1215,9 +1441,19 @@ function renderResults(segments) {
   }
 }
 
+function isUserKom(detail) {
+  if (!detail || !detail.athlete_segment_stats) return false;
+  const prTime = detail.athlete_segment_stats.pr_elapsed_time;
+  if (!prTime) return false;
+  const komTime = getKomSeconds(detail);
+  if (!komTime) return false;
+  return prTime <= komTime;
+}
+
 function buildSegmentCard(seg, detail) {
   const card = document.createElement('div');
-  card.className = 'segment-card';
+  const userHasKom = isUserKom(detail);
+  card.className = 'segment-card' + (userHasKom ? ' user-kom' : '');
   card.dataset.id = seg.id;
 
   const dist = seg.distance >= 1000
@@ -1245,15 +1481,17 @@ function buildSegmentCard(seg, detail) {
   if (state.athleteProfile && komSec != null && seg.distance > 0) {
     const ratio = feasibilityRatio(komSec, seg.distance, seg.avg_grade || 0, state.athleteProfile, sport);
     if (ratio != null) {
-      const label = ratio < 0.85 ? 'Battable' : ratio < 1.0 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
-      const cls = ratio < 0.85 ? 'easy' : ratio < 1.0 ? 'realistic' : ratio < 1.2 ? 'ambitious' : 'hard';
+      const label = ratio < 0.85 ? 'Battable' : ratio < 1.05 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
+      const cls = ratio < 0.85 ? 'easy' : ratio < 1.05 ? 'realistic' : ratio < 1.2 ? 'ambitious' : 'hard';
       ratioHtml = `<span><span class="kom-label">Ratio</span> <span class="ratio-badge ${cls}">${ratio.toFixed(2)} — ${label}</span></span>`;
     }
   }
 
+  const crownHtml = userHasKom ? '<span class="kom-crown" title="Vous detenez le KOM">\u{1F451}</span> ' : '';
+
   card.innerHTML = `
     <div class="seg-name">
-      <span>${esc(seg.name)}</span>
+      <span>${crownHtml}${esc(seg.name)}</span>
       <span>
         <button class="seg-refresh" title="Rafraichir ce segment">&#8635;</button>
         <a href="https://www.strava.com/segments/${seg.id}" target="_blank" rel="noopener">Strava &rarr;</a>
@@ -1289,17 +1527,8 @@ function buildSegmentCard(seg, detail) {
   });
 
   // Hover highlight
-  card.addEventListener('mouseenter', () => {
-    if (state.activeSegmentId !== seg.id && state.polylines[seg.id]) {
-      state.polylines[seg.id].setStyle({ color: '#e02000', weight: 5, opacity: 1 });
-      state.polylines[seg.id].bringToFront();
-    }
-  });
-  card.addEventListener('mouseleave', () => {
-    if (state.activeSegmentId !== seg.id && state.polylines[seg.id]) {
-      state.polylines[seg.id].setStyle({ color: '#FC4C02', weight: 3, opacity: 0.7 });
-    }
-  });
+  card.addEventListener('mouseenter', () => hoverSegment(seg.id));
+  card.addEventListener('mouseleave', () => unhoverSegment(seg.id));
 
   return card;
 }
