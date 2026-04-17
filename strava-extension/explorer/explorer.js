@@ -844,14 +844,17 @@ async function refreshEntireSearch(searchId) {
     const rawSegments = await recursiveExplore(bounds, type, token);
     if (state.aborted) { finishSearch('Annulee.'); return; }
 
-    setProgress(30, `${rawSegments.length} segments trouves dans la zone`);
+    const merged = mergeSegments(state.exploreSegments, rawSegments);
+    state.exploreSegments = merged;
+
+    setProgress(30, `${merged.length} segments (${rawSegments.length} cette exploration)`);
 
     // Fetch details — force re-fetch all
-    for (let i = 0; i < rawSegments.length; i++) {
+    for (let i = 0; i < merged.length; i++) {
       if (state.aborted) { finishSearch('Annulee.'); return; }
-      const seg = rawSegments[i];
-      const pct = 35 + Math.round(60 * (i + 1) / rawSegments.length);
-      setProgress(pct, `Details ${i + 1}/${rawSegments.length} — ${seg.name}`);
+      const seg = merged[i];
+      const pct = 35 + Math.round(60 * (i + 1) / merged.length);
+      setProgress(pct, `Details ${i + 1}/${merged.length} — ${seg.name}`);
 
       try {
         const detail = await getSegmentDetail(seg.id, token);
@@ -864,13 +867,12 @@ async function refreshEntireSearch(searchId) {
       updateRateInfo(`${state.totalRequests} requetes | ${state.requestTimestamps.length}/${RATE_LIMIT.MAX_REQUESTS} dans la fenetre 15min`);
     }
 
-    const results = applyFilters(rawSegments);
+    const results = applyFilters(merged);
     state.segments = results;
-    state.exploreSegments = rawSegments;
 
     // Update saved search
     await updateSavedSearch(searchId, {
-      exploreSegments: rawSegments,
+      exploreSegments: merged,
       filteredIds: results.map(s => s.id),
       createdAt: Date.now()
     });
@@ -1042,6 +1044,15 @@ async function saveCacheEntry(id, detail) {
 }
 
 // ── Search flow ──────────────────────────────────────────────────────────────
+
+/** Merge new segments into existing set — never lose previously found segments. */
+function mergeSegments(existing, fresh) {
+  const map = new Map();
+  for (const seg of existing) map.set(seg.id, seg);
+  for (const seg of fresh) map.set(seg.id, seg); // fresh data wins on duplicates
+  return Array.from(map.values());
+}
+
 async function startSearch() {
   if (!state.center) {
     alert('Cliquez sur la carte pour definir le centre de recherche.');
@@ -1069,11 +1080,14 @@ async function startSearch() {
 
     if (state.aborted) { finishSearch('Recherche annulee.'); return; }
 
-    state.exploreSegments = rawSegments;
+    // Merge new results with existing — never lose previously found segments
+    const merged = mergeSegments(state.exploreSegments, rawSegments);
+    const newCount = merged.length - state.exploreSegments.length;
+    state.exploreSegments = merged;
 
-    setProgress(30, `${rawSegments.length} segments trouves dans la zone`);
+    setProgress(30, `${merged.length} segments (${rawSegments.length} cette exploration, ${newCount > 0 ? '+' + newCount + ' nouveaux' : 'aucun nouveau'})`);
 
-    if (rawSegments.length === 0) {
+    if (merged.length === 0) {
       finishSearch('Aucun segment dans la zone.');
       return;
     }
@@ -1085,7 +1099,7 @@ async function startSearch() {
       state.allDetails[id] = entry.data;
     }
 
-    const needFetch = rawSegments.filter(s => {
+    const needFetch = merged.filter(s => {
       const entry = cache[s.id];
       if (!entry) return true;                          // pas en cache
       if (now - entry.fetchedAt > DETAIL_FRESH_MS) return true;  // perime
@@ -1125,18 +1139,18 @@ async function startSearch() {
     }
 
     // Phase 3: Apply all filters (including KOM pace, D+ from details) & save
-    const results = applyFilters(rawSegments);
+    const results = applyFilters(merged);
     state.segments = results;
 
     if (state.currentSearchId) {
       await updateSavedSearch(state.currentSearchId, {
         params: getCurrentParams(),
-        exploreSegments: rawSegments,
+        exploreSegments: merged,
         filteredIds: results.map(s => s.id),
         createdAt: Date.now()
       });
     } else {
-      await saveCurrentSearch(rawSegments, results);
+      await saveCurrentSearch(merged, results);
     }
     saveLastSearch();
 
