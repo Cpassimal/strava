@@ -1,6 +1,7 @@
 import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT, CACHE_TTL_MS, DETAIL_FRESH_MS } from '../lib/config.js';
 import { centerRadiusToBounds, subdivideBox, boundsToString, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
 import { computeAthleteProfile, feasibilityRatio, SPORT_CONFIG } from '../lib/gap.js';
+import { fetchTileSegments } from '../lib/tiles.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
@@ -187,7 +188,7 @@ function clearSegmentsFromMap() {
 }
 
 function addSegmentToMap(seg) {
-  const points = seg.points ? decodePolyline(seg.points) : null;
+  const points = seg._decodedPoints || (seg.points ? decodePolyline(seg.points) : null);
   if (!points || points.length < 2) return;
 
   const detail = state.allDetails[seg.id];
@@ -340,6 +341,7 @@ function unhighlightAll() {
 
 function fitMapToSegments(segments) {
   const allPoints = segments.flatMap(s => {
+    if (s._decodedPoints) return s._decodedPoints;
     if (s.points) return decodePolyline(s.points);
     if (s.start_latlng) return [s.start_latlng];
     return [];
@@ -1072,20 +1074,33 @@ async function startSearch() {
   try {
     const token = await getToken();
     const type = getActivityType();
-
-    // Phase 1: Explore the zone (always fresh)
-    setProgress(0, 'Exploration de la zone...');
+    const sport = getSport();
     const bounds = centerRadiusToBounds(state.center.lat, state.center.lng, state.radius);
-    const rawSegments = await recursiveExplore(bounds, type, token);
+
+    // Phase 0: Tile discovery (fast, no auth, exhaustive, with geometry)
+    setProgress(0, 'Decouverte via tiles...');
+    let tileSegments = [];
+    try {
+      tileSegments = await fetchTileSegments(bounds, sport);
+      if (state.aborted) { finishSearch('Recherche annulee.'); return; }
+      setProgress(5, `${tileSegments.length} segments via tiles`);
+    } catch (err) {
+      console.warn('Tile discovery error:', err);
+    }
+
+    // Phase 1: Classic explore (complements tiles with additional data)
+    setProgress(10, 'Exploration API...');
+    const exploreSegments = await recursiveExplore(bounds, type, token);
 
     if (state.aborted) { finishSearch('Recherche annulee.'); return; }
 
-    // Merge new results with existing — never lose previously found segments
+    // Merge tiles + explore + existing (explore data wins on duplicates for richer fields)
+    const rawSegments = mergeSegments(tileSegments, exploreSegments);
     const merged = mergeSegments(state.exploreSegments, rawSegments);
     const newCount = merged.length - state.exploreSegments.length;
     state.exploreSegments = merged;
 
-    setProgress(30, `${merged.length} segments (${rawSegments.length} cette exploration, ${newCount > 0 ? '+' + newCount + ' nouveaux' : 'aucun nouveau'})`);
+    setProgress(30, `${merged.length} segments total (${newCount > 0 ? '+' + newCount + ' nouveaux' : 'aucun nouveau'})`);
 
     if (merged.length === 0) {
       finishSearch('Aucun segment dans la zone.');
