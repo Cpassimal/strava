@@ -1,5 +1,5 @@
 import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT, CACHE_TTL_MS, DETAIL_FRESH_MS } from '../lib/config.js';
-import { centerRadiusToBounds, subdivideBox, boundsToString, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
+import { centerRadiusToBounds, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
 import { computeAthleteProfile, feasibilityRatio, SPORT_CONFIG } from '../lib/gap.js';
 import { fetchTileSegments } from '../lib/tiles.js';
 
@@ -188,10 +188,12 @@ function clearSegmentsFromMap() {
 }
 
 function addSegmentToMap(seg) {
-  const points = seg._decodedPoints || (seg.points ? decodePolyline(seg.points) : null);
+  // Prefer detail polyline (full, unclipped) over tile geometry (clipped to tile boundary)
+  const detail = state.allDetails[seg.id];
+  const detailPoly = detail && detail.map && detail.map.polyline;
+  const points = detailPoly ? decodePolyline(detailPoly) : (seg._decodedPoints || (seg.points ? decodePolyline(seg.points) : null));
   if (!points || points.length < 2) return;
 
-  const detail = state.allDetails[seg.id];
   const userKom = isUserKom(detail);
   const baseColor = userKom ? '#f59e0b' : '#FC4C02';
 
@@ -341,6 +343,9 @@ function unhighlightAll() {
 
 function fitMapToSegments(segments) {
   const allPoints = segments.flatMap(s => {
+    const d = state.allDetails[s.id];
+    const dp = d && d.map && d.map.polyline;
+    if (dp) return decodePolyline(dp);
     if (s._decodedPoints) return s._decodedPoints;
     if (s.points) return decodePolyline(s.points);
     if (s.start_latlng) return [s.start_latlng];
@@ -839,17 +844,25 @@ async function refreshEntireSearch(searchId) {
 
   try {
     const token = await getToken();
-    const bounds = centerRadiusToBounds(search.params.center.lat, search.params.center.lng, search.params.radius || 3);
-    const type = search.params.activityType;
+    const radius = search.params.radius || 3;
+    const bounds = centerRadiusToBounds(search.params.center.lat, search.params.center.lng, radius);
+    const searchSport = search.params.sport || (search.params.activityType === 'riding' ? 'riding' : 'running');
 
-    setProgress(0, 'Re-exploration de la zone...');
-    const rawSegments = await recursiveExplore(bounds, type, token);
+    setProgress(0, 'Re-exploration via tiles...');
+    const allTileSegs = await fetchTileSegments(bounds, searchSport, radius);
     if (state.aborted) { finishSearch('Annulee.'); return; }
 
-    const merged = mergeSegments(state.exploreSegments, rawSegments);
+    const center = search.params.center;
+    const tileSegments = allTileSegs.filter(seg => {
+      const startIn = seg.start_latlng && haversineKm(center.lat, center.lng, seg.start_latlng[0], seg.start_latlng[1]) <= radius;
+      const endIn = seg.end_latlng && haversineKm(center.lat, center.lng, seg.end_latlng[0], seg.end_latlng[1]) <= radius;
+      return startIn || endIn;
+    });
+
+    const merged = mergeSegments(state.exploreSegments, tileSegments);
     state.exploreSegments = merged;
 
-    setProgress(30, `${merged.length} segments (${rawSegments.length} cette exploration)`);
+    setProgress(15, `${merged.length} segments (${tileSegments.length} via tiles)`);
 
     // Fetch details — force re-fetch all
     for (let i = 0; i < merged.length; i++) {
@@ -1013,11 +1026,6 @@ async function apiFetch(path, token) {
   return resp.json();
 }
 
-async function exploreSegments(bounds, type, token) {
-  const bStr = boundsToString(bounds.sw, bounds.ne);
-  return apiFetch(`/segments/explore?bounds=${bStr}&activity_type=${type}`, token);
-}
-
 async function getSegmentDetail(id, token) {
   return apiFetch(`/segments/${id}`, token);
 }
@@ -1077,26 +1085,33 @@ async function startSearch() {
     const sport = getSport();
     const bounds = centerRadiusToBounds(state.center.lat, state.center.lng, state.radius);
 
-    // Phase 0: Tile discovery (fast, no auth, exhaustive, with geometry)
+    // Phase 1: Tile discovery (fast, no auth, exhaustive, with geometry)
     setProgress(0, 'Decouverte via tiles...');
     let tileSegments = [];
     try {
-      tileSegments = await fetchTileSegments(bounds, sport);
+      const allTileSegs = await fetchTileSegments(bounds, sport, state.radius, (done, total, segs) => {
+        const pct = Math.round(15 * done / total);
+        setProgress(pct, `Tiles ${done}/${total} — ${segs} segments`);
+      });
       if (state.aborted) { finishSearch('Recherche annulee.'); return; }
-      setProgress(5, `${tileSegments.length} segments via tiles`);
+      // Filter by radius (tiles are square, segments may be outside the circle)
+      tileSegments = allTileSegs.filter(seg => {
+        const startIn = seg.start_latlng && haversineKm(
+          state.center.lat, state.center.lng, seg.start_latlng[0], seg.start_latlng[1]
+        ) <= state.radius;
+        const endIn = seg.end_latlng && haversineKm(
+          state.center.lat, state.center.lng, seg.end_latlng[0], seg.end_latlng[1]
+        ) <= state.radius;
+        return startIn || endIn;
+      });
+      setProgress(15, `${tileSegments.length} segments via tiles (${allTileSegs.length} dans les tuiles)`);
     } catch (err) {
       console.warn('Tile discovery error:', err);
     }
 
-    // Phase 1: Classic explore (complements tiles with additional data)
-    setProgress(10, 'Exploration API...');
-    const exploreSegments = await recursiveExplore(bounds, type, token);
-
     if (state.aborted) { finishSearch('Recherche annulee.'); return; }
 
-    // Merge tiles + explore + existing (explore data wins on duplicates for richer fields)
-    const rawSegments = mergeSegments(tileSegments, exploreSegments);
-    const merged = mergeSegments(state.exploreSegments, rawSegments);
+    const merged = mergeSegments(state.exploreSegments, tileSegments);
     const newCount = merged.length - state.exploreSegments.length;
     state.exploreSegments = merged;
 
@@ -1120,7 +1135,7 @@ async function startSearch() {
       if (now - entry.fetchedAt > DETAIL_FRESH_MS) return true;  // perime
       return false;
     });
-    const fresh = rawSegments.length - needFetch.length;
+    const fresh = merged.length - needFetch.length;
     const stale = needFetch.filter(s => cache[s.id]).length;
     const missing = needFetch.length - stale;
 
@@ -1188,57 +1203,6 @@ async function startSearch() {
   }
 }
 
-async function recursiveExplore(bounds, type, token) {
-  const allSegments = new Map();
-  const queue = [bounds];
-  let calls = 0;
-
-  while (queue.length > 0 && !state.aborted && calls < RATE_LIMIT.MAX_EXPLORE_CALLS) {
-    const box = queue.shift();
-    calls++;
-
-    setProgress(
-      Math.min(25, Math.round(25 * calls / 40)),
-      `Exploration cellule ${calls} (${allSegments.size} segments, ${queue.length} en attente)`
-    );
-
-    try {
-      const result = await exploreSegments(box, type, token);
-      const segments = result.segments || [];
-
-      for (const seg of segments) {
-        const startIn = seg.start_latlng && haversineKm(
-          state.center.lat, state.center.lng, seg.start_latlng[0], seg.start_latlng[1]
-        ) <= state.radius;
-        const endIn = seg.end_latlng && haversineKm(
-          state.center.lat, state.center.lng, seg.end_latlng[0], seg.end_latlng[1]
-        ) <= state.radius;
-        if (startIn || endIn) {
-          allSegments.set(seg.id, seg);
-        }
-      }
-
-      if (segments.length >= 10) {
-        const boxW = box.ne.lng - box.sw.lng;
-        const boxH = box.ne.lat - box.sw.lat;
-        if (boxW > 0.001 && boxH > 0.001) {
-          queue.push(...subdivideBox(box.sw, box.ne));
-        }
-      }
-    } catch (err) {
-      console.warn('Explore error:', err.message);
-    }
-
-    cleanTimestamps();
-    updateRateInfo(`${state.totalRequests} requetes | ${state.requestTimestamps.length}/${RATE_LIMIT.MAX_REQUESTS} dans la fenetre 15min`);
-  }
-
-  if (calls >= RATE_LIMIT.MAX_EXPLORE_CALLS) {
-    updateRateInfo(`Exploration coupee a ${RATE_LIMIT.MAX_EXPLORE_CALLS} appels (zone dense).`);
-  }
-
-  return Array.from(allSegments.values());
-}
 
 /** Re-apply filters on existing explore data and refresh display. */
 async function liveRefilter() {
