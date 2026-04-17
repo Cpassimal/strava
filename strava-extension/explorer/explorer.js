@@ -1111,6 +1111,22 @@ async function startSearch() {
 
     if (state.aborted) { finishSearch('Recherche annulee.'); return; }
 
+    // Detect zone change vs active saved search → reset accumulated segments
+    const activeSearch = state.currentSearchId
+      ? state.savedSearches.find(s => s.id === state.currentSearchId)
+      : null;
+    const zoneChanged = activeSearch && (
+      !activeSearch.params.center ||
+      activeSearch.params.center.lat !== state.center.lat ||
+      activeSearch.params.center.lng !== state.center.lng ||
+      activeSearch.params.radius !== state.radius ||
+      (activeSearch.params.sport || 'running') !== sport
+    );
+    if (zoneChanged || !activeSearch) {
+      state.exploreSegments = [];
+      state.currentSearchId = null;
+    }
+
     const merged = mergeSegments(state.exploreSegments, tileSegments);
     const newCount = merged.length - state.exploreSegments.length;
     state.exploreSegments = merged;
