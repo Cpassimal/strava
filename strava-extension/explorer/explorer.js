@@ -114,16 +114,6 @@ function updateSportUI() {
   sortKomPaceOption.textContent = isRunning ? 'Allure KOM' : 'Vitesse KOM';
 }
 
-// ── Init ─────────────────────────────────────────────────────────────────────
-initMap();
-initEvents();
-initGeocode();
-loadStatus();
-loadAthleteProfile();
-loadSavedSearches().then(() => {
-  loadLastSearch();
-});
-
 // ── Map backgrounds ──────────────────────────────────────────────────────────
 const MAP_BACKGROUNDS = {
   voyager: {
@@ -149,6 +139,16 @@ const MAP_BACKGROUNDS = {
 };
 
 const BG_STORAGE_KEY = 'explorer_map_bg';
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+initMap();
+initEvents();
+initGeocode();
+loadStatus();
+loadAthleteProfile();
+loadSavedSearches().then(() => {
+  loadLastSearch();
+});
 
 // ── Map ──────────────────────────────────────────────────────────────────────
 function initMap() {
