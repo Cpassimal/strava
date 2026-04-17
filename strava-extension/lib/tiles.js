@@ -44,7 +44,39 @@ function zoomForRadius(radiusKm) {
 
 // ── Tile fetching ───────────────────────────────────────────────────────────
 
-const TILE_VERSION = 87224798;
+const DEFAULT_TILE_VERSION = 87224798;  // fallback only
+let cachedTileVersion = null;
+let tileVersionFetchedAt = 0;
+const VERSION_TTL_MS = 60 * 60 * 1000;   // re-fetch every hour
+
+/**
+ * Fetch the current tile version from strava.com/maps.
+ * Strava embeds it in the page JS, we grep for it.
+ */
+async function getTileVersion() {
+  const now = Date.now();
+  if (cachedTileVersion && (now - tileVersionFetchedAt) < VERSION_TTL_MS) {
+    return cachedTileVersion;
+  }
+  try {
+    const resp = await fetch('https://www.strava.com/maps', {
+      credentials: 'include',
+      headers: { 'Referer': 'https://www.strava.com/' }
+    });
+    if (!resp.ok) return DEFAULT_TILE_VERSION;
+    const html = await resp.text();
+    // Look for /tiles/segments/<number>/ pattern in the page source
+    const match = html.match(/\/tiles\/segments\/(\d+)\//);
+    if (match) {
+      cachedTileVersion = parseInt(match[1], 10);
+      tileVersionFetchedAt = now;
+      return cachedTileVersion;
+    }
+  } catch (err) {
+    console.warn('getTileVersion error:', err.message);
+  }
+  return DEFAULT_TILE_VERSION;
+}
 
 /**
  * Fetch segments from Strava's tile endpoint for a given area.
@@ -60,6 +92,7 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
   const zoom = zoomForRadius(radiusKm || 3);
   const tiles = getTilesForBounds(bounds.sw, bounds.ne, zoom);
   const surfaceTypes = surface != null ? String(surface) : '0';
+  const tileVersion = await getTileVersion();
   const segmentsMap = new Map();
 
   const stats = { ok: 0, empty: 0, auth: 0, error: 0 };
@@ -75,7 +108,7 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
         sport_types: sportType
       });
 
-      const url = `https://www.strava.com/tiles/segments/${TILE_VERSION}/${tile.z}/${tile.x}/${tile.y}?${params}`;
+      const url = `https://www.strava.com/tiles/segments/${tileVersion}/${tile.z}/${tile.x}/${tile.y}?${params}`;
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { 'Referer': 'https://www.strava.com/maps' }
