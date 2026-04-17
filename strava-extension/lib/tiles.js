@@ -66,6 +66,7 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress) {
     if (onProgress) onProgress(ti, tiles.length, segmentsMap.size);
     try {
       const params = new URLSearchParams({
+        intent: 'popular',
         elevation_filter: 'all',
         surface_types: '0',
         sport_types: sportType
