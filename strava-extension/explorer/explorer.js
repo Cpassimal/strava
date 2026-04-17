@@ -1054,13 +1054,6 @@ async function startSearch() {
     return;
   }
 
-  const dmn = parseFloat(distMin.value);
-  const dmx = parseFloat(distMax.value);
-  if (isNaN(dmn) || isNaN(dmx) || dmn >= dmx) {
-    alert('Renseignez un range de distance valide (min < max).');
-    return;
-  }
-
   state.searching = true;
   state.aborted = false;
   state.totalRequests = 0;
