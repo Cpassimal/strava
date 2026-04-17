@@ -72,6 +72,9 @@ const speedInputs = $('#speedInputs');
 const speedMin = $('#speedMin');
 const speedMax = $('#speedMax');
 const sortKomPaceOption = $('#sortKomPaceOption');
+const addSegUrlInput = $('#addSegUrl');
+const addSegBtn = $('#addSegBtn');
+const addSegStatus = $('#addSegStatus');
 const zonePickBtn = $('#zonePickBtn');
 const mapEl = $('#map');
 
@@ -206,7 +209,19 @@ function addSegmentToMap(seg) {
   pl.on('click', () => highlightSegment(seg.id));
   pl.on('mouseover', () => hoverSegment(seg.id));
   pl.on('mouseout', () => unhoverSegment(seg.id));
-  pl.bindTooltip((userKom ? '\u{1F451} ' : '') + seg.name, { sticky: true });
+  // Build tooltip with name + feasibility ratio
+  let tooltipText = (userKom ? '\u{1F451} ' : '') + seg.name;
+  if (state.athleteProfile) {
+    const komSec = getKomSeconds(detail);
+    if (komSec != null && seg.distance > 0) {
+      const ratio = feasibilityRatio(komSec, seg.distance, seg.avg_grade || 0, state.athleteProfile, getSport());
+      if (ratio != null) {
+        const label = ratio < 0.85 ? 'Battable' : ratio < 1.05 ? 'Realiste' : ratio < 1.2 ? 'Ambitieux' : 'Hors portee';
+        tooltipText += ` — ${ratio.toFixed(2)} (${label})`;
+      }
+    }
+  }
+  pl.bindTooltip(tooltipText, { sticky: true });
 
   state.polylines[seg.id] = pl;
 
@@ -435,6 +450,10 @@ function initEvents() {
 
   searchBtn.addEventListener('click', startSearch);
   stopBtn.addEventListener('click', () => { state.aborted = true; });
+  addSegBtn.addEventListener('click', addSegmentByUrl);
+  addSegUrlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addSegmentByUrl();
+  });
   sortBy.addEventListener('change', () => { renderResults(state.segments); persistCurrentFilters(); });
 
   // Sport toggle
@@ -474,16 +493,46 @@ function initEvents() {
     $('#filtersArrow').classList.toggle('open', !open);
   });
 
-  $('#settingsBtn').addEventListener('click', () => $('#settingsModal').style.display = '');
+  $('#settingsBtn').addEventListener('click', () => {
+    $('#settingsModal').style.display = '';
+    updateCacheStats();
+  });
   $('#modalClose').addEventListener('click', () => $('#settingsModal').style.display = 'none');
   $('#modalClearCache').addEventListener('click', async () => {
     await chrome.runtime.sendMessage({ action: 'clearSegmentsCache' });
     state.allDetails = {};
     rateInfo.textContent = 'Cache vide.';
+    updateCacheStats();
   });
   $('#settingsModal').addEventListener('click', (e) => {
     if (e.target === $('#settingsModal')) $('#settingsModal').style.display = 'none';
   });
+}
+
+async function updateCacheStats() {
+  const el = $('#cacheStats');
+  if (!el) return;
+  try {
+    const data = await chrome.storage.local.get([
+      STORAGE_KEYS.SEGMENTS_CACHE,
+      STORAGE_KEYS.SAVED_SEARCHES
+    ]);
+    const cache = data[STORAGE_KEYS.SEGMENTS_CACHE] || {};
+    const searches = data[STORAGE_KEYS.SAVED_SEARCHES] || [];
+    const cacheCount = Object.keys(cache).length;
+    const cacheSize = new Blob([JSON.stringify(cache)]).size;
+    const searchesSize = new Blob([JSON.stringify(searches)]).size;
+    const totalKb = ((cacheSize + searchesSize) / 1024).toFixed(1);
+    const cacheKb = (cacheSize / 1024).toFixed(1);
+    const searchesKb = (searchesSize / 1024).toFixed(1);
+    el.innerHTML = `
+      <strong>Cache segments:</strong> ${cacheCount} entrees, ${cacheKb} Ko<br>
+      <strong>Recherches sauvegardees:</strong> ${searches.length}, ${searchesKb} Ko<br>
+      <strong>Total storage:</strong> ${totalKb} Ko / ~10240 Ko
+    `;
+  } catch (err) {
+    el.textContent = 'Erreur lecture cache: ' + err.message;
+  }
 }
 
 function applyCenterFromInputs() {
@@ -609,7 +658,19 @@ async function loadSavedSearches() {
 }
 
 async function persistSavedSearches() {
-  await chrome.storage.local.set({ [STORAGE_KEYS.SAVED_SEARCHES]: state.savedSearches });
+  // Strip heavy tile geometry before persisting (use detail polyline for display instead)
+  const stripped = state.savedSearches.map(s => ({
+    ...s,
+    exploreSegments: (s.exploreSegments || []).map(seg => {
+      const { _decodedPoints, ...rest } = seg;
+      return rest;
+    })
+  }));
+  try {
+    await chrome.storage.local.set({ [STORAGE_KEYS.SAVED_SEARCHES]: stripped });
+  } catch (err) {
+    console.error('Saved searches persist error:', err);
+  }
 }
 
 function generateSearchName(params) {
@@ -1053,6 +1114,85 @@ function mergeSegments(existing, fresh) {
   return Array.from(map.values());
 }
 
+/** Extract segment ID from a Strava URL or raw ID. */
+function extractSegmentId(input) {
+  if (!input) return null;
+  const trimmed = String(input).trim();
+  const match = trimmed.match(/segments\/(\d+)/);
+  if (match) return parseInt(match[1], 10);
+  if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+  return null;
+}
+
+/** Fetch a segment by URL/ID and add it to the current results. */
+async function addSegmentByUrl() {
+  const segId = extractSegmentId(addSegUrlInput.value);
+  if (!segId) {
+    addSegStatus.textContent = 'URL ou ID invalide.';
+    return;
+  }
+
+  // Already in results?
+  if (state.exploreSegments.find(s => s.id === segId)) {
+    addSegStatus.textContent = `Segment ${segId} deja present.`;
+    return;
+  }
+
+  addSegBtn.disabled = true;
+  addSegStatus.textContent = `Chargement du segment ${segId}...`;
+
+  try {
+    const token = await getToken();
+    const detail = await getSegmentDetail(segId, token);
+    if (!detail || !detail.distance) {
+      addSegStatus.textContent = 'Segment introuvable ou invalide.';
+      return;
+    }
+
+    state.allDetails[segId] = detail;
+    await saveCacheEntry(segId, detail);
+
+    // Build an explore-like segment object from detail
+    const seg = {
+      id: detail.id,
+      name: detail.name,
+      distance: detail.distance,
+      avg_grade: detail.average_grade,
+      elev_difference: detail.total_elevation_gain,
+      start_latlng: detail.start_latlng,
+      end_latlng: detail.end_latlng,
+      points: detail.map && detail.map.polyline
+    };
+
+    state.exploreSegments = mergeSegments(state.exploreSegments, [seg]);
+
+    // Re-filter + render
+    const results = applyFilters(state.exploreSegments);
+    state.segments = results;
+    clearSegmentsFromMap();
+    results.forEach(s => addSegmentToMap(s));
+    renderResults(results);
+    persistCurrentFilters();
+
+    // Update saved search exploreSegments if active
+    if (state.currentSearchId) {
+      await updateSavedSearch(state.currentSearchId, {
+        exploreSegments: state.exploreSegments,
+        filteredIds: results.map(s => s.id)
+      });
+    }
+
+    addSegUrlInput.value = '';
+    addSegStatus.textContent = `"${detail.name}" ajoute.`;
+    highlightSegment(segId);
+  } catch (err) {
+    addSegStatus.textContent = `Erreur: ${err.message}`;
+    console.error(err);
+  } finally {
+    addSegBtn.disabled = false;
+  }
+}
+
 async function startSearch() {
   if (!state.center) {
     alert('Cliquez sur la carte pour definir le centre de recherche.');
@@ -1253,12 +1393,23 @@ async function liveRefilter() {
   }
 }
 
-/** Save current filter state to both lastSearch and the active saved search. */
+/** Save current filter state to both lastSearch and the active saved search.
+ *  Does NOT update the zone params (center/radius/sport) — zone is fixed per saved search. */
 function persistCurrentFilters() {
   saveLastSearch();
   if (state.currentSearchId) {
+    const search = state.savedSearches.find(s => s.id === state.currentSearchId);
+    if (!search) return;
+    // Preserve zone params (center, radius, sport, activityType) from the saved search
+    const newParams = {
+      ...getCurrentParams(),
+      center: search.params.center,
+      radius: search.params.radius,
+      sport: search.params.sport,
+      activityType: search.params.activityType
+    };
     updateSavedSearch(state.currentSearchId, {
-      params: getCurrentParams(),
+      params: newParams,
       filteredIds: state.segments.map(s => s.id)
     });
   }

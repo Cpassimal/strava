@@ -136,6 +136,15 @@
           <button id="searchBtn" class="primary">Rechercher</button>
           <button id="stopBtn" class="danger" style="display:none">Arreter</button>
         </div>
+
+        <h2>Ajouter un segment</h2>
+        <div class="filter-row">
+          <div class="dual-input">
+            <input type="text" id="addSegUrl" placeholder="URL ou ID Strava" style="flex:1">
+            <button id="addSegBtn" style="flex:0">+</button>
+          </div>
+          <div id="addSegStatus" class="feasibility-info"></div>
+        </div>
         </div><!-- /filters-body -->
 
         <div id="progress" class="progress" style="display:none">
@@ -173,6 +182,7 @@
     <div class="modal-content">
       <h2>Parametres</h2>
       <p class="modal-info">Les identifiants Strava sont partages avec le Dashboard.<br>Modifiez-les depuis les parametres du Dashboard.</p>
+      <div id="cacheStats" class="modal-info"></div>
       <div class="modal-actions">
         <button id="modalClearCache">Vider le cache segments</button>
         <button id="modalClose">Fermer</button>
