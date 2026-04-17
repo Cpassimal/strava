@@ -21,7 +21,6 @@ const state = {
   pickMode: true,
   requestTimestamps: [],
   totalRequests: 0,
-  lastExploreZone: null,  // { lat, lng, radius, type } of last explore
   currentSearchId: null,
   savedSearches: [],
   athleteProfile: null,    // GAP profile computed from activities
@@ -88,7 +87,6 @@ function setSport(sport, resetView = true) {
     state.currentSearchId = null;
     state.segments = [];
     state.exploreSegments = [];
-    state.lastExploreZone = null;
     clearSegmentsFromMap();
     resultsList.innerHTML = '';
     resultCount.textContent = '';
@@ -797,16 +795,8 @@ async function restoreSavedSearch(searchId) {
     state.allDetails[id] = entry.data;
   }
 
-  // Restore explore segments + zone info for reuse
+  // Restore explore segments
   state.exploreSegments = search.exploreSegments || [];
-  if (search.params.center) {
-    state.lastExploreZone = {
-      lat: search.params.center.lat,
-      lng: search.params.center.lng,
-      radius: search.params.radius,
-      type: search.params.activityType
-    };
-  }
 
   // Re-apply filters (using stored explore data + current detail cache)
   const filtered = applyFilters(state.exploreSegments);
@@ -1071,16 +1061,6 @@ async function saveCacheEntry(id, detail) {
 }
 
 // ── Search flow ──────────────────────────────────────────────────────────────
-function zoneMatchesCurrent() {
-  // Check if we already have explore data for the exact same zone
-  if (!state.lastExploreZone || state.exploreSegments.length === 0) return false;
-  const z = state.lastExploreZone;
-  return z.lat === state.center.lat
-    && z.lng === state.center.lng
-    && z.radius === state.radius
-    && z.type === getActivityType();
-}
-
 async function startSearch() {
   if (!state.center) {
     alert('Cliquez sur la carte pour definir le centre de recherche.');
@@ -1107,28 +1087,15 @@ async function startSearch() {
   try {
     const token = await getToken();
     const type = getActivityType();
-    let rawSegments;
 
-    // Phase 1: Explore — skip if same zone
-    if (zoneMatchesCurrent()) {
-      rawSegments = state.exploreSegments;
-      setProgress(30, `Zone inchangee — ${rawSegments.length} segments en memoire, re-filtrage direct`);
-    } else {
-      setProgress(0, 'Exploration de la zone...');
-      const bounds = centerRadiusToBounds(state.center.lat, state.center.lng, state.radius);
-      rawSegments = await recursiveExplore(bounds, type, token);
+    // Phase 1: Explore the zone (always fresh)
+    setProgress(0, 'Exploration de la zone...');
+    const bounds = centerRadiusToBounds(state.center.lat, state.center.lng, state.radius);
+    const rawSegments = await recursiveExplore(bounds, type, token);
 
-      if (state.aborted) { finishSearch('Recherche annulee.'); return; }
+    if (state.aborted) { finishSearch('Recherche annulee.'); return; }
 
-      // Store the raw explore data (unfiltered) for reuse
-      state.exploreSegments = rawSegments;
-      state.lastExploreZone = {
-        lat: state.center.lat,
-        lng: state.center.lng,
-        radius: state.radius,
-        type
-      };
-    }
+    state.exploreSegments = rawSegments;
 
     // Pre-filter on distance + grade (data available from explore)
     const gMin = parseFloat(gradeMin.value);
@@ -1420,8 +1387,11 @@ function getKomSeconds(detail) {
   if (!detail) return null;
   if (detail.xoms) {
     const komStr = detail.xoms.kom || detail.xoms.overall;
-    const sec = parseTimeToSeconds(komStr);
-    if (sec != null) return sec;
+    if (komStr) {
+      const sec = parseTimeToSeconds(komStr);
+      if (sec != null) return sec;
+      console.warn(`[KOM] Unparsed xoms for segment ${detail.id}:`, detail.xoms);
+    }
   }
   return null;
 }

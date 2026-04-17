@@ -71,15 +71,34 @@ export function boundsToString(sw, ne) {
 }
 
 /**
- * Parse a time string like "5:34" or "1:23:45" to total seconds.
+ * Parse a time string to total seconds.
+ * Supports: "5:34", "1:23:45", "52s", "1m30s", "2m", "1h05m30s"
  */
 export function parseTimeToSeconds(timeStr) {
   if (!timeStr) return null;
-  const parts = timeStr.split(':').map(Number);
-  if (parts.some(isNaN)) return null;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0];
+  const str = String(timeStr).trim();
+
+  // Try "XhYmZs" / "YmZs" / "Xs" / "Ym" format
+  const hmsMatch = str.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+  if (hmsMatch && (hmsMatch[1] || hmsMatch[2] || hmsMatch[3])) {
+    return (parseInt(hmsMatch[1] || 0)) * 3600
+      + (parseInt(hmsMatch[2] || 0)) * 60
+      + (parseInt(hmsMatch[3] || 0));
+  }
+
+  // Try "M:SS" or "H:MM:SS" format
+  const parts = str.split(':').map(Number);
+  if (!parts.some(isNaN)) {
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 1) return parts[0];
+  }
+
+  // Try bare number (seconds)
+  const num = parseFloat(str);
+  if (!isNaN(num)) return Math.round(num);
+
+  return null;
 }
 
 /**
