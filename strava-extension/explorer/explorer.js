@@ -1248,20 +1248,19 @@ async function recursiveExplore(bounds, type, token) {
       const segments = result.segments || [];
 
       for (const seg of segments) {
-        if (seg.start_latlng) {
-          const dist = haversineKm(state.center.lat, state.center.lng, seg.start_latlng[0], seg.start_latlng[1]);
-          if (dist <= state.radius) {
-            allSegments.set(seg.id, seg);
-          }
+        const startIn = seg.start_latlng && haversineKm(
+          state.center.lat, state.center.lng, seg.start_latlng[0], seg.start_latlng[1]
+        ) <= state.radius;
+        const endIn = seg.end_latlng && haversineKm(
+          state.center.lat, state.center.lng, seg.end_latlng[0], seg.end_latlng[1]
+        ) <= state.radius;
+        if (startIn || endIn) {
+          allSegments.set(seg.id, seg);
         }
       }
 
       if (segments.length >= 10) {
-        const boxW = box.ne.lng - box.sw.lng;
-        const boxH = box.ne.lat - box.sw.lat;
-        if (boxW > 0.005 && boxH > 0.005) {
-          queue.push(...subdivideBox(box.sw, box.ne));
-        }
+        queue.push(...subdivideBox(box.sw, box.ne));
       }
     } catch (err) {
       console.warn('Explore error:', err.message);
