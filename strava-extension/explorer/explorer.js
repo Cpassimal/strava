@@ -703,9 +703,6 @@ function applyParams(params) {
     setActiveFeasPresets(params.feasPresets);
   } else {
     setActiveFeasPresets([]);
-    if (params.feasibilityMin) feasibilityMinSlider.value = params.feasibilityMin;
-    if (params.feasibilityMax) feasibilityMaxSlider.value = params.feasibilityMax;
-    updateSliderLabel();
   }
   if (params.sortBy) sortBy.value = params.sortBy;
 }
@@ -933,9 +930,6 @@ function loadLastSearch() {
         setActiveFeasPresets(last.filters.feasPresets);
       } else {
         setActiveFeasPresets([]);
-        if (last.filters.feasibilityMin) feasibilityMinSlider.value = last.filters.feasibilityMin;
-        if (last.filters.feasibilityMax) feasibilityMaxSlider.value = last.filters.feasibilityMax;
-        updateSliderLabel();
       }
       if (last.filters.sortBy) sortBy.value = last.filters.sortBy;
     }
@@ -1308,26 +1302,28 @@ function applyFilters(exploreSegs) {
   const gMin = parseFloat(gradeMin.value);
   const gMax = parseFloat(gradeMax.value);
 
-  return exploreSegs.filter(seg => {
+  const excluded = { distance: 0, grade: 0, elev: 0, speed: 0, feasibility: 0 };
+
+  const results = exploreSegs.filter(seg => {
     // Distance + grade (available from explore data)
-    if (!isNaN(dmn) && seg.distance < dmn) return false;
-    if (!isNaN(dmx) && seg.distance > dmx) return false;
-    if (!isNaN(gMin) && seg.avg_grade < gMin) return false;
-    if (!isNaN(gMax) && seg.avg_grade > gMax) return false;
+    if (!isNaN(dmn) && seg.distance < dmn) { excluded.distance++; return false; }
+    if (!isNaN(dmx) && seg.distance > dmx) { excluded.distance++; return false; }
+    if (!isNaN(gMin) && seg.avg_grade < gMin) { excluded.grade++; return false; }
+    if (!isNaN(gMax) && seg.avg_grade > gMax) { excluded.grade++; return false; }
 
     const detail = state.allDetails[seg.id];
     if (!detail) return true;
 
     const elev = detail.total_elevation_gain;
     if (elev != null) {
-      if (!isNaN(eMin) && elev < eMin) return false;
-      if (!isNaN(eMax) && elev > eMax) return false;
+      if (!isNaN(eMin) && elev < eMin) { excluded.elev++; return false; }
+      if (!isNaN(eMax) && elev > eMax) { excluded.elev++; return false; }
     }
 
     const komTime = getKomSeconds(detail);
     if (komTime != null && seg.distance > 0 && speedFilterFn) {
       const secPerKm = komTime / (seg.distance / 1000);
-      if (!speedFilterFn(secPerKm)) return false;
+      if (!speedFilterFn(secPerKm)) { excluded.speed++; return false; }
     }
 
     if (useFeasibility && komTime != null && seg.distance > 0) {
@@ -1335,12 +1331,20 @@ function applyFilters(exploreSegs) {
         komTime, seg.distance, seg.avg_grade || 0, state.athleteProfile, sport
       );
       if (ratio != null) {
-        if (ratio < fMin || ratio > fMax) return false;
+        if (ratio < fMin || ratio > fMax) { excluded.feasibility++; return false; }
       }
     }
 
     return true;
   });
+
+  const totalExcluded = Object.values(excluded).reduce((a, b) => a + b, 0);
+  if (totalExcluded > 0) {
+    const parts = Object.entries(excluded).filter(([, v]) => v > 0).map(([k, v]) => `${k}: ${v}`);
+    console.log(`[Filters] ${exploreSegs.length} bruts → ${results.length} apres filtres. Exclus: ${parts.join(', ')}`);
+  }
+
+  return results;
 }
 
 function parsePaceInput(val) {
