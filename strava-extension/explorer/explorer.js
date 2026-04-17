@@ -941,7 +941,13 @@ async function refreshEntireSearch(searchId) {
     const searchSport = search.params.sport || (search.params.activityType === 'riding' ? 'riding' : 'running');
 
     setProgress(0, 'Re-exploration via tiles...');
-    const allTileSegs = await fetchTileSegments(bounds, searchSport, radius, null, search.params.surface || '0');
+    const tileResult = await fetchTileSegments(bounds, searchSport, radius, null, search.params.surface || '0');
+    if (tileResult.stats.auth > 0 && tileResult.segments.length === 0) {
+      finishSearch('');
+      showStravaLoginWarning();
+      return;
+    }
+    const allTileSegs = tileResult.segments;
     if (state.aborted) { finishSearch('Annulee.'); return; }
 
     const center = search.params.center;
@@ -1167,6 +1173,21 @@ function mergeSegments(existing, fresh) {
   return Array.from(map.values());
 }
 
+function showStravaLoginWarning() {
+  let banner = document.getElementById('stravaLoginBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'stravaLoginBanner';
+    banner.className = 'strava-login-banner';
+    banner.innerHTML = `
+      <span>⚠ Connexion a <a href="https://www.strava.com/login" target="_blank" rel="noopener">strava.com</a> requise dans ce navigateur pour la decouverte de segments.</span>
+      <button class="close-btn" title="Fermer">&times;</button>
+    `;
+    banner.querySelector('.close-btn').addEventListener('click', () => banner.remove());
+    document.body.prepend(banner);
+  }
+}
+
 /** Extract segment ID from a Strava URL or raw ID. */
 function extractSegmentId(input) {
   if (!input) return null;
@@ -1272,11 +1293,20 @@ async function startSearch() {
     setProgress(0, 'Decouverte via tiles...');
     let tileSegments = [];
     try {
-      const allTileSegs = await fetchTileSegments(bounds, sport, state.radius, (done, total, segs) => {
+      const tileResult = await fetchTileSegments(bounds, sport, state.radius, (done, total, segs) => {
         const pct = Math.round(15 * done / total);
         setProgress(pct, `Tiles ${done}/${total} — ${segs} segments`);
       }, surfaceTypeSelect.value);
       if (state.aborted) { finishSearch('Recherche annulee.'); return; }
+
+      // Detect auth failure → explicit user message
+      if (tileResult.stats.auth > 0 && tileResult.segments.length === 0) {
+        finishSearch('');
+        showStravaLoginWarning();
+        return;
+      }
+      const allTileSegs = tileResult.segments;
+
       // Filter by radius (tiles are square, segments may be outside the circle)
       tileSegments = allTileSegs.filter(seg => {
         const startIn = seg.start_latlng && haversineKm(

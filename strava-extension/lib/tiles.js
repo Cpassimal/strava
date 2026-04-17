@@ -62,6 +62,8 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
   const surfaceTypes = surface != null ? String(surface) : '0';
   const segmentsMap = new Map();
 
+  const stats = { ok: 0, empty: 0, auth: 0, error: 0 };
+
   for (let ti = 0; ti < tiles.length; ti++) {
     const tile = tiles[ti];
     if (onProgress) onProgress(ti, tiles.length, segmentsMap.size);
@@ -78,21 +80,35 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
         headers: { 'Referer': 'https://www.strava.com/maps' }
       });
 
-      if (!resp.ok) continue;
+      if (resp.status === 401 || resp.status === 403) {
+        stats.auth++;
+        continue;
+      }
+      if (!resp.ok) {
+        stats.error++;
+        continue;
+      }
 
       const buf = await resp.arrayBuffer();
+      if (buf.byteLength === 0) {
+        stats.empty++;
+        continue;
+      }
+
       const segments = decodeMvtSegments(buf, tile);
+      stats.ok++;
       for (const seg of segments) {
         if (!segmentsMap.has(seg.id)) {
           segmentsMap.set(seg.id, seg);
         }
       }
     } catch (err) {
+      stats.error++;
       console.warn(`Tile ${tile.z}/${tile.x}/${tile.y} error:`, err.message);
     }
   }
 
-  return Array.from(segmentsMap.values());
+  return { segments: Array.from(segmentsMap.values()), stats };
 }
 
 // ── MVT decoder ─────────────────────────────────────────────────────────────
