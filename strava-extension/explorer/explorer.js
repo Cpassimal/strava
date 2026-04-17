@@ -1,4 +1,4 @@
-import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT, CACHE_TTL_MS, DETAIL_FRESH_MS } from '../lib/config.js';
+import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT } from '../lib/config.js';
 import { centerRadiusToBounds, haversineKm, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
 import { computeAthleteProfile, feasibilityRatio, SPORT_CONFIG } from '../lib/gap.js';
 import { fetchTileSegments } from '../lib/tiles.js';
@@ -1033,17 +1033,7 @@ async function getSegmentDetail(id, token) {
 // ── Cache ────────────────────────────────────────────────────────────────────
 async function loadCache() {
   const data = await chrome.storage.local.get(STORAGE_KEYS.SEGMENTS_CACHE);
-  const cache = data[STORAGE_KEYS.SEGMENTS_CACHE] || {};
-  const now = Date.now();
-  let pruned = false;
-  for (const id of Object.keys(cache)) {
-    if (now - cache[id].fetchedAt > CACHE_TTL_MS) {
-      delete cache[id];
-      pruned = true;
-    }
-  }
-  if (pruned) await chrome.storage.local.set({ [STORAGE_KEYS.SEGMENTS_CACHE]: cache });
-  return cache;
+  return data[STORAGE_KEYS.SEGMENTS_CACHE] || {};
 }
 
 async function saveCacheEntry(id, detail) {
@@ -1138,29 +1128,31 @@ async function startSearch() {
       return;
     }
 
-    // Phase 2: Fetch details — re-fetch if stale (> 2h)
+    // Phase 2: Fetch details — re-fetch only if KOM changed vs cached detail
     const cache = await loadCache();
-    const now = Date.now();
     for (const [id, entry] of Object.entries(cache)) {
       state.allDetails[id] = entry.data;
     }
 
     const needFetch = merged.filter(s => {
       const entry = cache[s.id];
-      if (!entry) return true;                          // pas en cache
-      if (now - entry.fetchedAt > DETAIL_FRESH_MS) return true;  // perime
-      return false;
+      if (!entry) return true;                                  // pas en cache
+      const cachedKom = getKomSeconds(entry.data);              // KOM en cache
+      const tileKom = s._tileData && s._tileData.komElapsedTime; // KOM actuel via tiles
+      if (tileKom == null) return false;                         // pas d'info tile, garde cache
+      if (cachedKom == null) return true;                        // cache sans KOM, re-fetch
+      return tileKom !== cachedKom;                              // KOM changé → re-fetch
     });
     const fresh = merged.length - needFetch.length;
-    const stale = needFetch.filter(s => cache[s.id]).length;
-    const missing = needFetch.length - stale;
+    const komChanged = needFetch.filter(s => cache[s.id]).length;
+    const missing = needFetch.length - komChanged;
 
     if (needFetch.length === 0) {
-      setProgress(95, `${fresh} segments, tous frais — aucun appel`);
+      setProgress(95, `${fresh} segments, KOMs inchanges — aucun appel`);
     } else {
       const parts = [];
-      if (fresh > 0) parts.push(`${fresh} frais`);
-      if (stale > 0) parts.push(`${stale} a rafraichir`);
+      if (fresh > 0) parts.push(`${fresh} inchanges`);
+      if (komChanged > 0) parts.push(`${komChanged} KOM change`);
       if (missing > 0) parts.push(`${missing} nouveaux`);
       setProgress(35, `Details: ${parts.join(', ')} — ${needFetch.length} appels`);
     }
