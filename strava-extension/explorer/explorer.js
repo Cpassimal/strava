@@ -468,10 +468,18 @@ function initEvents() {
     setSport(e.target.value);
   }));
 
-  // Live filter inputs → refilter on change
+  // Live filter inputs → refilter on input (debounced) and on change (instant on blur)
   const refilterInputs = [distMin, distMax, paceMin, paceMax, speedMin, speedMax,
     elevMin, elevMax, gradeMin, gradeMax];
-  refilterInputs.forEach(el => el.addEventListener('change', liveRefilter));
+  let refilterTimer = null;
+  const debouncedRefilter = () => {
+    clearTimeout(refilterTimer);
+    refilterTimer = setTimeout(liveRefilter, 300);
+  };
+  refilterInputs.forEach(el => {
+    el.addEventListener('input', debouncedRefilter);
+    el.addEventListener('change', liveRefilter);
+  });
 
   // Feasibility preset toggles → adjust slider + refilter
   feasPresetBtns.forEach(btn => btn.addEventListener('click', () => {
@@ -853,6 +861,11 @@ function renderSavedSearches() {
 async function restoreSavedSearch(searchId, preserveMapView) {
   const search = state.savedSearches.find(s => s.id === searchId);
   if (!search) return;
+
+  // Flush any pending debounced filter save before switching
+  if (state.currentSearchId && state.currentSearchId !== searchId) {
+    persistCurrentFilters();
+  }
 
   // Switch sport mode to match the saved search
   // Fallback: old searches without sport field → derive from activityType
