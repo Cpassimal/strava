@@ -145,6 +145,13 @@ function initMap() {
     }
   });
 
+  // Persist map view on move/zoom (debounced)
+  let viewSaveTimer = null;
+  state.map.on('moveend zoomend', () => {
+    clearTimeout(viewSaveTimer);
+    viewSaveTimer = setTimeout(() => saveMapView(), 300);
+  });
+
   // Start in pick mode with crosshair
   mapEl.classList.add('pick-mode');
 }
@@ -747,7 +754,9 @@ function getCurrentParams() {
 function applyParams(params) {
   if (params.center) {
     setCenter(params.center.lat, params.center.lng);
-    state.map.setView([params.center.lat, params.center.lng], 13);
+    if (!params._skipMapView) {
+      state.map.setView([params.center.lat, params.center.lng], 13);
+    }
     mapHint.classList.add('hidden');
   }
   if (params.radius) {
@@ -841,7 +850,7 @@ function renderSavedSearches() {
 }
 
 // ── Restore a saved search ───────────────────────────────────────────────────
-async function restoreSavedSearch(searchId) {
+async function restoreSavedSearch(searchId, preserveMapView) {
   const search = state.savedSearches.find(s => s.id === searchId);
   if (!search) return;
 
@@ -852,7 +861,13 @@ async function restoreSavedSearch(searchId) {
   setSport(savedSport, false);
 
   state.currentSearchId = searchId;
-  applyParams(search.params);
+  const paramsToApply = preserveMapView
+    ? { ...search.params, _skipMapView: true }
+    : search.params;
+  applyParams(paramsToApply);
+  if (preserveMapView) {
+    state.map.setView([preserveMapView.lat, preserveMapView.lng], preserveMapView.zoom);
+  }
 
   // Load detail cache into memory
   const cache = await loadCache();
@@ -877,7 +892,7 @@ async function restoreSavedSearch(searchId) {
   renderResults(filtered);
   renderSavedSearches();
 
-  if (filtered.length > 0) fitMapToSegments(filtered);
+  if (filtered.length > 0 && !preserveMapView) fitMapToSegments(filtered);
 
   progressDiv.style.display = '';
   setProgress(100, `${filtered.length} segment(s) — recherche restauree`);
@@ -975,7 +990,7 @@ function loadLastSearch() {
     if (last.currentSearchId) {
       const exists = state.savedSearches.find(s => s.id === last.currentSearchId);
       if (exists) {
-        restoreSavedSearch(last.currentSearchId);
+        restoreSavedSearch(last.currentSearchId, last.mapView);
         return;
       }
     }
@@ -984,7 +999,11 @@ function loadLastSearch() {
     if (last.sport) setSport(last.sport, false);
     if (last.center) {
       setCenter(last.center.lat, last.center.lng);
-      state.map.setView([last.center.lat, last.center.lng], 13);
+      if (last.mapView) {
+        state.map.setView([last.mapView.lat, last.mapView.lng], last.mapView.zoom);
+      } else {
+        state.map.setView([last.center.lat, last.center.lng], 13);
+      }
       mapHint.classList.add('hidden');
     }
     if (last.radius) {
@@ -1014,13 +1033,29 @@ function loadLastSearch() {
   });
 }
 
+function saveMapView() {
+  if (!state.map) return;
+  const c = state.map.getCenter();
+  const z = state.map.getZoom();
+  chrome.storage.local.get(STORAGE_KEYS.LAST_SEARCH, (data) => {
+    const last = data[STORAGE_KEYS.LAST_SEARCH] || {};
+    last.mapView = { lat: c.lat, lng: c.lng, zoom: z };
+    chrome.storage.local.set({ [STORAGE_KEYS.LAST_SEARCH]: last });
+  });
+}
+
 function saveLastSearch() {
+  const view = state.map ? (() => {
+    const c = state.map.getCenter();
+    return { lat: c.lat, lng: c.lng, zoom: state.map.getZoom() };
+  })() : null;
   chrome.storage.local.set({
     [STORAGE_KEYS.LAST_SEARCH]: {
       center: state.center,
       radius: state.radius,
       currentSearchId: state.currentSearchId,
       sport: getSport(),
+      mapView: view,
       filters: {
         distMin: distMin.value, distMax: distMax.value,
         paceMin: paceMin.value, paceMax: paceMax.value,
@@ -1554,7 +1589,7 @@ async function refreshSingleSegment(segId) {
 // ── Render results ───────────────────────────────────────────────────────────
 function renderResults(segments) {
   const sorted = sortSegments([...segments]);
-  resultCount.textContent = `(${sorted.length})`;
+  resultCount.textContent = `(${sorted.length}/${state.exploreSegments.length})`;
   resultsList.innerHTML = '';
 
   if (sorted.length === 0) {
