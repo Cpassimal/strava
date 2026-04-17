@@ -38,16 +38,23 @@ export function haversineKm(lat1, lng1, lat2, lng2) {
 }
 
 /**
- * Keep only segments whose start OR end point lies within `radiusKm` of the center.
- * Used because tile queries return square regions — we want a circular mask.
+ * Keep only segments that *intersect* the radius circle around (centerLat, centerLng).
+ * Applied after a square tile query to restore circular semantics.
+ *
+ * Uses the full polyline when available: a segment counts as "in" if ANY of its
+ * points lies within the radius. Otherwise it would miss long segments that
+ * traverse the circle with both endpoints outside (e.g. a 5km segment crossing
+ * a 3km-radius zone perpendicularly). Fast path first: check endpoints, skip
+ * polyline scan on hit.
  */
 export function filterSegmentsByRadius(segments, centerLat, centerLng, radiusKm) {
+  const within = (lat, lng) => haversineKm(centerLat, centerLng, lat, lng) <= radiusKm;
   return segments.filter(seg => {
-    const startIn = seg.start_latlng
-      && haversineKm(centerLat, centerLng, seg.start_latlng[0], seg.start_latlng[1]) <= radiusKm;
-    const endIn = seg.end_latlng
-      && haversineKm(centerLat, centerLng, seg.end_latlng[0], seg.end_latlng[1]) <= radiusKm;
-    return startIn || endIn;
+    if (seg.start_latlng && within(seg.start_latlng[0], seg.start_latlng[1])) return true;
+    if (seg.end_latlng && within(seg.end_latlng[0], seg.end_latlng[1])) return true;
+    const points = seg._decodedPoints || (seg.points ? decodePolyline(seg.points) : null);
+    if (!points || points.length === 0) return false;
+    return points.some(([lat, lng]) => within(lat, lng));
   });
 }
 

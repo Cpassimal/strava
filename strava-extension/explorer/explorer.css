@@ -250,9 +250,11 @@ header h1 {
 .filters-panel {
   padding: 0;
   border-bottom: 1px solid var(--border);
-  overflow-y: auto;
   flex-shrink: 0;
-  max-height: 55vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 70vh;
 }
 
 .filters-header {
@@ -264,16 +266,23 @@ header h1 {
   user-select: none;
   background: #eef2f7;
   border-bottom: 1px solid #dde3ea;
+  flex-shrink: 0;
 }
 .filters-header:hover { background: #e4ebf3; }
 
+/* Only the filter inputs scroll — progress/rate-info stay pinned at the
+   bottom of the panel so search feedback is never clipped. */
 .filters-body {
   padding: 0 12px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .filters-panel .progress,
 .filters-panel .rate-info {
   padding: 0 12px;
+  flex-shrink: 0;
 }
 .filters-panel .progress { margin: 8px 12px; }
 .filters-panel .rate-info { margin: 0 12px 8px; }

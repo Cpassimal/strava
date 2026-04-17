@@ -7,6 +7,11 @@
  */
 
 // ── Sport configurations ────────────────────────────────────────────────────
+// riegelLongSlope extends Riegel's formula beyond its validity range:
+//   classic Riegel holds only up to ~2× the reference distance; past that
+//   the exponent must grow with log10(dist/threshold) or the projection
+//   under-penalises long efforts. Running suffers most (fatigue curve is
+//   steep); cycling stays flat because aero/effort scales differently.
 export const SPORT_CONFIG = {
   running: {
     /** Minetti-inspired metabolic cost of grade for running */
@@ -15,6 +20,7 @@ export const SPORT_CONFIG = {
     riegelShort: 1.15,
     riegelThreshold: 1500,   // anaerobic boost below this
     riegelFloor: 400,
+    riegelLongSlope: 0.03,   // +exp per decade of distance past threshold
     effortFactor: 1.12,
     activityTypes: ['Run', 'TrailRun'],
     unit: 'pace',            // min/km
@@ -26,6 +32,7 @@ export const SPORT_CONFIG = {
     riegelShort: 1.08,
     riegelThreshold: 1000,   // short bike segments are rare
     riegelFloor: 500,
+    riegelLongSlope: 0,      // cycling: Riegel holds better across distance
     effortFactor: 1.06,
     activityTypes: ['Ride'],
     unit: 'speed',           // km/h
@@ -63,10 +70,18 @@ export function computeGapSpeed(distanceM, timeSec, gradePct, sport = 'running')
  */
 function riegelExponent(distM, sport = 'running') {
   const cfg = SPORT_CONFIG[sport];
-  if (distM >= cfg.riegelThreshold) return cfg.riegelBase;
   if (distM <= cfg.riegelFloor) return cfg.riegelShort;
-  const t = (distM - cfg.riegelFloor) / (cfg.riegelThreshold - cfg.riegelFloor);
-  return cfg.riegelShort - t * (cfg.riegelShort - cfg.riegelBase);
+  if (distM < cfg.riegelThreshold) {
+    const t = (distM - cfg.riegelFloor) / (cfg.riegelThreshold - cfg.riegelFloor);
+    return cfg.riegelShort - t * (cfg.riegelShort - cfg.riegelBase);
+  }
+  // Beyond threshold: optionally grow the exponent with distance ratio.
+  // slope=0 keeps classic Riegel (riding). slope>0 penalises long efforts
+  // whose projection from a short reference would otherwise be too optimistic.
+  const slope = cfg.riegelLongSlope || 0;
+  if (slope === 0) return cfg.riegelBase;
+  const overFactor = Math.log10(distM / cfg.riegelThreshold);
+  return cfg.riegelBase + slope * overFactor;
 }
 
 /**
