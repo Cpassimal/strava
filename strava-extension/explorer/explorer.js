@@ -847,27 +847,14 @@ async function refreshEntireSearch(searchId) {
     const rawSegments = await recursiveExplore(bounds, type, token);
     if (state.aborted) { finishSearch('Annulee.'); return; }
 
-    // Pre-filter
-    const dmn = parseFloat(search.params.distMin);
-    const dmx = parseFloat(search.params.distMax);
-    const gMin = parseFloat(search.params.gradeMin);
-    const gMax = parseFloat(search.params.gradeMax);
-    const preFiltered = rawSegments.filter(s => {
-      if (!isNaN(dmn) && s.distance < dmn) return false;
-      if (!isNaN(dmx) && s.distance > dmx) return false;
-      if (!isNaN(gMin) && s.avg_grade < gMin) return false;
-      if (!isNaN(gMax) && s.avg_grade > gMax) return false;
-      return true;
-    });
-
-    setProgress(30, `${preFiltered.length} segments apres pre-filtre (${rawSegments.length} total)`);
+    setProgress(30, `${rawSegments.length} segments trouves dans la zone`);
 
     // Fetch details — force re-fetch all
-    for (let i = 0; i < preFiltered.length; i++) {
+    for (let i = 0; i < rawSegments.length; i++) {
       if (state.aborted) { finishSearch('Annulee.'); return; }
-      const seg = preFiltered[i];
-      const pct = 35 + Math.round(60 * (i + 1) / preFiltered.length);
-      setProgress(pct, `Details ${i + 1}/${preFiltered.length} — ${seg.name}`);
+      const seg = rawSegments[i];
+      const pct = 35 + Math.round(60 * (i + 1) / rawSegments.length);
+      setProgress(pct, `Details ${i + 1}/${rawSegments.length} — ${seg.name}`);
 
       try {
         const detail = await getSegmentDetail(seg.id, token);
@@ -1097,21 +1084,10 @@ async function startSearch() {
 
     state.exploreSegments = rawSegments;
 
-    // Pre-filter on distance + grade (data available from explore)
-    const gMin = parseFloat(gradeMin.value);
-    const gMax = parseFloat(gradeMax.value);
-    const preFiltered = rawSegments.filter(s => {
-      if (s.distance < dmn || s.distance > dmx) return false;
-      if (!isNaN(gMin) && s.avg_grade < gMin) return false;
-      if (!isNaN(gMax) && s.avg_grade > gMax) return false;
-      return true;
-    });
+    setProgress(30, `${rawSegments.length} segments trouves dans la zone`);
 
-    const skipped = rawSegments.length - preFiltered.length;
-    setProgress(30, `${preFiltered.length} segments a detailler (${skipped} exclus par filtres, ${rawSegments.length} dans la zone)`);
-
-    if (preFiltered.length === 0) {
-      finishSearch(`Aucun segment dans les filtres (${rawSegments.length} dans la zone, 0 apres filtres distance/pente).`);
+    if (rawSegments.length === 0) {
+      finishSearch('Aucun segment dans la zone.');
       return;
     }
 
@@ -1122,13 +1098,13 @@ async function startSearch() {
       state.allDetails[id] = entry.data;
     }
 
-    const needFetch = preFiltered.filter(s => {
+    const needFetch = rawSegments.filter(s => {
       const entry = cache[s.id];
       if (!entry) return true;                          // pas en cache
       if (now - entry.fetchedAt > DETAIL_FRESH_MS) return true;  // perime
       return false;
     });
-    const fresh = preFiltered.length - needFetch.length;
+    const fresh = rawSegments.length - needFetch.length;
     const stale = needFetch.filter(s => cache[s.id]).length;
     const missing = needFetch.length - stale;
 
@@ -1162,7 +1138,7 @@ async function startSearch() {
     }
 
     // Phase 3: Apply all filters (including KOM pace, D+ from details) & save
-    const results = applyFilters(preFiltered);
+    const results = applyFilters(rawSegments);
     state.segments = results;
 
     if (state.currentSearchId) {
