@@ -1398,8 +1398,9 @@ async function discoverSegmentsFromTiles(sport, center, radius, surface) {
 async function buildTileAuthMessage(stats) {
   const versionStatus = stats && stats.versionAuthStatus;
   if (versionStatus === 'noTab') {
-    return `Ouvre <a href="https://www.strava.com/dashboard" target="_blank" rel="noopener">strava.com</a> dans un onglet `
-      + `et garde-le ouvert pendant la recherche (l'extension s'en sert pour lire tes sessions).`;
+    return `<strong>Ouvre <a href="https://www.strava.com/dashboard" target="_blank" rel="noopener">strava.com</a> dans un onglet de ce navigateur</strong>, `
+      + `laisse-le ouvert, puis relance la recherche. `
+      + `L'extension passe par cet onglet pour lire ta session (cookies partitionnes sur Chrome 147+).`;
   }
   if (versionStatus === 'formatChanged') {
     return `Strava a change le format de sa page /maps. L'extension a besoin d'une mise a jour.`;

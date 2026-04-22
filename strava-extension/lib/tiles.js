@@ -54,56 +54,39 @@ const VERSION_TTL_MS = 60 * 60 * 1000;   // re-fetch every hour
 // We sidestep this by proxying fetches through a strava.com tab via
 // chrome.scripting — the fetch then runs first-party and cookies flow.
 let stravaTabId = null;
-let stravaTabOwned = false;
 
+/** Find a user-opened strava.com tab. We deliberately do NOT open one
+ *  ourselves: Chrome 147+ partitions cookies for extension-created tabs
+ *  onto the extension's origin, so session cookies don't flow. Only
+ *  user-navigated tabs reliably carry first-party strava.com cookies. */
 async function getStravaTabId() {
   if (stravaTabId != null) {
     try {
       const t = await chrome.tabs.get(stravaTabId);
-      if (t && t.status === 'complete' && /^https:\/\/www\.strava\.com\//.test(t.url || '')) {
-        return stravaTabId;
-      }
-    } catch { /* tab gone, fall through */ }
+      if (t && /strava\.com/.test(t.url || '')) return stravaTabId;
+    } catch { /* tab gone */ }
     stravaTabId = null;
-    stravaTabOwned = false;
   }
-  const existing = await chrome.tabs.query({ url: 'https://www.strava.com/*' });
-  const ready = existing.find(t => t.status === 'complete');
-  if (ready) {
-    stravaTabId = ready.id;
-    stravaTabOwned = false;
-    return stravaTabId;
-  }
-  // No strava.com tab open — spin up a hidden lightweight one.
-  // /robots.txt is ~100 bytes, no JS, no images, loads in <100ms.
-  const created = await chrome.tabs.create({ url: 'https://www.strava.com/robots.txt', active: false });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error('strava.com tab load timeout'));
-    }, 20000);
-    const listener = (tid, info) => {
-      if (tid === created.id && info.status === 'complete') {
-        clearTimeout(timer);
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
-    };
-    chrome.tabs.onUpdated.addListener(listener);
-  });
-  stravaTabId = created.id;
-  stravaTabOwned = true;
+  // Broad match: any window, any strava.com page (www, app, subdomains).
+  const queried = await Promise.all([
+    chrome.tabs.query({ url: '*://www.strava.com/*' }),
+    chrome.tabs.query({ url: '*://*.strava.com/*' }),
+    chrome.tabs.query({ url: '*://strava.com/*' })
+  ]);
+  const all = queried.flat();
+  const dedup = Array.from(new Map(all.map(t => [t.id, t])).values());
+  console.log('[tiles] strava.com tabs found:', dedup.map(t => ({ id: t.id, url: t.url, status: t.status, windowId: t.windowId, incognito: t.incognito })));
+  if (!dedup.length) throw new Error('NO_STRAVA_TAB');
+  const picked = dedup.find(t => t.status === 'complete' && /^https:\/\/www\.strava\.com\//.test(t.url || ''))
+    || dedup.find(t => t.status === 'complete')
+    || dedup[0];
+  console.log('[tiles] using tab', picked.id, picked.url);
+  stravaTabId = picked.id;
   return stravaTabId;
 }
 
-/** Close the proxy tab if we opened it ourselves.
- *  Safe to call anytime — no-op when the tab was the user's own. */
 export async function closeStravaProxyTab() {
-  if (stravaTabId != null && stravaTabOwned) {
-    try { await chrome.tabs.remove(stravaTabId); } catch { /* already gone */ }
-  }
   stravaTabId = null;
-  stravaTabOwned = false;
 }
 
 /** Fetch a strava.com URL from within a strava.com tab context so session
@@ -119,14 +102,15 @@ async function stravaFetch(url, { binary = false } = {}) {
         const r = await fetch(u, { credentials: 'include' });
         const status = r.status;
         const finalUrl = r.url;
+        const docCookieSummary = (document.cookie || '').split(';').map(c => c.trim().split('=')[0]).filter(Boolean);
         if (bin) {
           const buf = await r.arrayBuffer();
           const bytes = new Uint8Array(buf);
           let s = '';
           for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-          return { status, finalUrl, body: btoa(s) };
+          return { status, finalUrl, body: btoa(s), docCookieSummary };
         }
-        return { status, finalUrl, body: await r.text() };
+        return { status, finalUrl, body: await r.text(), docCookieSummary };
       } catch (e) {
         return { error: e.message || String(e) };
       }
@@ -163,8 +147,16 @@ async function getTileVersion() {
     const r = await stravaFetch('https://www.strava.com/maps', { binary: false });
     if (r.error) {
       console.warn('[tiles] stravaFetch /maps error:', r.error);
-      return { version: DEFAULT_TILE_VERSION, authStatus: /tab/i.test(r.error) ? 'noTab' : 'unknown' };
+      return { version: DEFAULT_TILE_VERSION, authStatus: /tab|NO_STRAVA_TAB/i.test(r.error) ? 'noTab' : 'unknown' };
     }
+
+    console.log('[tiles] /maps via tab →', {
+      status: r.status,
+      finalUrl: r.finalUrl,
+      htmlLen: (r.body || '').length,
+      hasTileVersion: /\/tiles\/segments\/(\d+)\//.test(r.body || ''),
+      docCookies: r.docCookieSummary
+    });
 
     const finalUrl = r.finalUrl || '';
     if (/\/(login|session|sign[_-]?in)/i.test(finalUrl)) {
