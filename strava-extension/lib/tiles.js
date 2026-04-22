@@ -70,35 +70,58 @@ async function getTileVersion() {
       headers: { 'Referer': 'https://www.strava.com/' }
     });
 
-    // Strava redirects anonymous /maps → /login (or /session/new).
-    // fetch follows redirects by default, so resp.url exposes the final URL.
     const finalUrl = resp.url || '';
+    const respHeaders = {};
+    resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+    console.log('[DEBUG /maps] status:', resp.status, 'finalUrl:', finalUrl, 'redirected:', resp.redirected);
+    console.log('[DEBUG /maps] headers:', respHeaders);
+
     if (/\/(login|session|sign[_-]?in)/i.test(finalUrl)) {
+      console.log('[DEBUG /maps] → loggedOut (finalUrl match)');
       return { version: DEFAULT_TILE_VERSION, authStatus: 'loggedOut' };
     }
     if (!resp.ok) {
+      console.log('[DEBUG /maps] → unknown (!resp.ok)');
       return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
     }
 
     const html = await resp.text();
     const match = html.match(/\/tiles\/segments\/(\d+)\//);
+    console.log('[DEBUG /maps] html.length:', html.length, 'tileVersionMatch:', match && match[0]);
+    console.log('[DEBUG /maps] occurrences tile/segment:', {
+      tiles_segments: (html.match(/tiles\/segments\/\d+/g) || []).slice(0, 5),
+      tileVersion_kw: (html.match(/tile[_-]?version[^,}]{0,60}/gi) || []).slice(0, 5),
+      mapVersion_kw: (html.match(/map[_-]?version[^,}]{0,60}/gi) || []).slice(0, 5),
+      segmentTile: (html.match(/segment[_-]?tile[^,}]{0,60}/gi) || []).slice(0, 5)
+    });
+    console.log('[DEBUG /maps] title match:', (html.match(/<title>([^<]*)<\/title>/i) || [])[1]);
+    console.log('[DEBUG /maps] body sample (head):', html.slice(0, 800));
+    console.log('[DEBUG /maps] body sample (mid):', html.slice(Math.floor(html.length / 2), Math.floor(html.length / 2) + 800));
+    console.log('[DEBUG /maps] markers:', {
+      hasAuthToken: /name="authenticity_token"/i.test(html),
+      hasSignIn: /(sign[_ -]?in|connecte[rz]|log[_ -]?in)/i.test(html),
+      hasSubscribe: /subscribe|premium|upsell|abonn/i.test(html),
+      hasHeatmap: /heatmap/i.test(html),
+      hasChallenge: /challenge|verify|captcha|cloudflare/i.test(html)
+    });
+
     if (match) {
       cachedTileVersion = parseInt(match[1], 10);
       tileVersionFetchedAt = now;
+      console.log('[DEBUG /maps] → ok, version:', cachedTileVersion);
       return { version: cachedTileVersion, authStatus: 'ok' };
     }
 
-    // 200 + no tile version: either Strava silently served the login page
-    // (cookies stripped mid-flight, no redirect), or the page format changed.
-    // Login-page markers: CSRF field + "sign in" copy.
     const looksLikeLogin = /name="authenticity_token"/i.test(html)
       && /(sign[_ -]?in|connecte[rz]|log[_ -]?in)/i.test(html);
     if (looksLikeLogin) {
+      console.log('[DEBUG /maps] → loggedOut (login markers in HTML)');
       return { version: DEFAULT_TILE_VERSION, authStatus: 'loggedOut' };
     }
+    console.log('[DEBUG /maps] → formatChanged (no match, no login markers)');
     return { version: DEFAULT_TILE_VERSION, authStatus: 'formatChanged' };
   } catch (err) {
-    console.warn('getTileVersion error:', err.message);
+    console.warn('[DEBUG /maps] fetch error:', err.message);
     return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
   }
 }
