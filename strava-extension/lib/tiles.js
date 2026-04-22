@@ -49,6 +49,100 @@ let cachedTileVersion = null;
 let tileVersionFetchedAt = 0;
 const VERSION_TTL_MS = 60 * 60 * 1000;   // re-fetch every hour
 
+// Chrome partitions cookies by top-level site; session cookies set during
+// normal strava.com navigation are not visible to extension-origin fetches.
+// We sidestep this by proxying fetches through a strava.com tab via
+// chrome.scripting — the fetch then runs first-party and cookies flow.
+let stravaTabId = null;
+let stravaTabOwned = false;
+
+async function getStravaTabId() {
+  if (stravaTabId != null) {
+    try {
+      const t = await chrome.tabs.get(stravaTabId);
+      if (t && t.status === 'complete' && /^https:\/\/www\.strava\.com\//.test(t.url || '')) {
+        return stravaTabId;
+      }
+    } catch { /* tab gone, fall through */ }
+    stravaTabId = null;
+    stravaTabOwned = false;
+  }
+  const existing = await chrome.tabs.query({ url: 'https://www.strava.com/*' });
+  const ready = existing.find(t => t.status === 'complete');
+  if (ready) {
+    stravaTabId = ready.id;
+    stravaTabOwned = false;
+    return stravaTabId;
+  }
+  // No strava.com tab open — spin up a hidden lightweight one.
+  // /robots.txt is ~100 bytes, no JS, no images, loads in <100ms.
+  const created = await chrome.tabs.create({ url: 'https://www.strava.com/robots.txt', active: false });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error('strava.com tab load timeout'));
+    }, 20000);
+    const listener = (tid, info) => {
+      if (tid === created.id && info.status === 'complete') {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+  stravaTabId = created.id;
+  stravaTabOwned = true;
+  return stravaTabId;
+}
+
+/** Close the proxy tab if we opened it ourselves.
+ *  Safe to call anytime — no-op when the tab was the user's own. */
+export async function closeStravaProxyTab() {
+  if (stravaTabId != null && stravaTabOwned) {
+    try { await chrome.tabs.remove(stravaTabId); } catch { /* already gone */ }
+  }
+  stravaTabId = null;
+  stravaTabOwned = false;
+}
+
+/** Fetch a strava.com URL from within a strava.com tab context so session
+ *  cookies are sent. Returns { status, finalUrl, body } where body is a
+ *  string (text mode) or base64 (binary mode), or { error } on failure. */
+async function stravaFetch(url, { binary = false } = {}) {
+  const tabId = await getStravaTabId();
+  const [entry] = await chrome.scripting.executeScript({
+    target: { tabId },
+    args: [url, binary],
+    func: async (u, bin) => {
+      try {
+        const r = await fetch(u, { credentials: 'include' });
+        const status = r.status;
+        const finalUrl = r.url;
+        if (bin) {
+          const buf = await r.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let s = '';
+          for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+          return { status, finalUrl, body: btoa(s) };
+        }
+        return { status, finalUrl, body: await r.text() };
+      } catch (e) {
+        return { error: e.message || String(e) };
+      }
+    }
+  });
+  return entry && entry.result ? entry.result : { error: 'no script result' };
+}
+
+function base64ToArrayBuffer(b64) {
+  const binStr = atob(b64);
+  const buf = new ArrayBuffer(binStr.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < binStr.length; i++) view[i] = binStr.charCodeAt(i);
+  return buf;
+}
+
 /**
  * Fetch the current tile version from strava.com/maps.
  * Strava embeds it in the page JS, we grep for it.
@@ -57,6 +151,7 @@ const VERSION_TTL_MS = 60 * 60 * 1000;   // re-fetch every hour
  *   'ok'            — /maps loaded authenticated, tile version extracted
  *   'loggedOut'     — /maps redirected to /login (no session or cookies stripped)
  *   'formatChanged' — /maps loaded OK but the tile version pattern is gone
+ *   'noTab'         — couldn't find or open a strava.com tab to proxy through
  *   'unknown'       — network error or non-ok status
  */
 async function getTileVersion() {
@@ -65,87 +160,39 @@ async function getTileVersion() {
     return { version: cachedTileVersion, authStatus: 'ok' };
   }
   try {
-    if (chrome && chrome.cookies && chrome.cookies.getAll) {
-      try {
-        const all = [
-          ...(await chrome.cookies.getAll({ domain: '.strava.com' })),
-          ...(await chrome.cookies.getAll({ domain: 'strava.com' })),
-          ...(await chrome.cookies.getAll({ domain: 'www.strava.com' }))
-        ];
-        const dedup = Array.from(new Map(all.map(c => [c.name + '|' + c.domain, c])).values());
-        console.log('[DEBUG cookies] total strava.com cookies:', dedup.length);
-        const interesting = dedup.filter(c => /session|auth|csrf|remember/i.test(c.name));
-        console.log('[DEBUG cookies] session-like:', interesting.map(c => ({
-          name: c.name,
-          domain: c.domain,
-          sameSite: c.sameSite,
-          secure: c.secure,
-          httpOnly: c.httpOnly,
-          partitionKey: c.partitionKey,
-          expires: c.expirationDate ? new Date(c.expirationDate * 1000).toISOString() : 'session'
-        })));
-      } catch (e) {
-        console.warn('[DEBUG cookies] error:', e.message);
-      }
+    const r = await stravaFetch('https://www.strava.com/maps', { binary: false });
+    if (r.error) {
+      console.warn('[tiles] stravaFetch /maps error:', r.error);
+      return { version: DEFAULT_TILE_VERSION, authStatus: /tab/i.test(r.error) ? 'noTab' : 'unknown' };
     }
-    const resp = await fetch('https://www.strava.com/maps', {
-      credentials: 'include',
-      headers: { 'Referer': 'https://www.strava.com/' }
-    });
 
-    const finalUrl = resp.url || '';
-    const respHeaders = {};
-    resp.headers.forEach((v, k) => { respHeaders[k] = v; });
-    console.log('[DEBUG /maps] status:', resp.status, 'finalUrl:', finalUrl, 'redirected:', resp.redirected);
-    console.log('[DEBUG /maps] headers:', respHeaders);
-
+    const finalUrl = r.finalUrl || '';
     if (/\/(login|session|sign[_-]?in)/i.test(finalUrl)) {
-      console.log('[DEBUG /maps] → loggedOut (finalUrl match)');
       return { version: DEFAULT_TILE_VERSION, authStatus: 'loggedOut' };
     }
-    if (!resp.ok) {
-      console.log('[DEBUG /maps] → unknown (!resp.ok)');
+    if (r.status < 200 || r.status >= 300) {
       return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
     }
 
-    const html = await resp.text();
+    const html = r.body || '';
     const match = html.match(/\/tiles\/segments\/(\d+)\//);
-    console.log('[DEBUG /maps] html.length:', html.length, 'tileVersionMatch:', match && match[0]);
-    console.log('[DEBUG /maps] occurrences tile/segment:', {
-      tiles_segments: (html.match(/tiles\/segments\/\d+/g) || []).slice(0, 5),
-      tileVersion_kw: (html.match(/tile[_-]?version[^,}]{0,60}/gi) || []).slice(0, 5),
-      mapVersion_kw: (html.match(/map[_-]?version[^,}]{0,60}/gi) || []).slice(0, 5),
-      segmentTile: (html.match(/segment[_-]?tile[^,}]{0,60}/gi) || []).slice(0, 5)
-    });
-    console.log('[DEBUG /maps] title match:', (html.match(/<title>([^<]*)<\/title>/i) || [])[1]);
-    console.log('[DEBUG /maps] body sample (head):', html.slice(0, 800));
-    console.log('[DEBUG /maps] body sample (mid):', html.slice(Math.floor(html.length / 2), Math.floor(html.length / 2) + 800));
-    console.log('[DEBUG /maps] markers:', {
-      hasAuthToken: /name="authenticity_token"/i.test(html),
-      hasSignIn: /(sign[_ -]?in|connecte[rz]|log[_ -]?in)/i.test(html),
-      hasSubscribe: /subscribe|premium|upsell|abonn/i.test(html),
-      hasHeatmap: /heatmap/i.test(html),
-      hasChallenge: /challenge|verify|captcha|cloudflare/i.test(html)
-    });
-
     if (match) {
       cachedTileVersion = parseInt(match[1], 10);
       tileVersionFetchedAt = now;
-      console.log('[DEBUG /maps] → ok, version:', cachedTileVersion);
       return { version: cachedTileVersion, authStatus: 'ok' };
     }
 
     const looksLikeLogin = /name="authenticity_token"/i.test(html)
       && /(sign[_ -]?in|connecte[rz]|log[_ -]?in)/i.test(html);
     if (looksLikeLogin) {
-      console.log('[DEBUG /maps] → loggedOut (login markers in HTML)');
       return { version: DEFAULT_TILE_VERSION, authStatus: 'loggedOut' };
     }
-    console.log('[DEBUG /maps] → formatChanged (no match, no login markers)');
     return { version: DEFAULT_TILE_VERSION, authStatus: 'formatChanged' };
   } catch (err) {
-    console.warn('[DEBUG /maps] fetch error:', err.message);
-    return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
+    console.warn('getTileVersion error:', err.message);
+    const msg = err.message || '';
+    const isTabIssue = /Cannot access|No tab|scripting|permission|tab/i.test(msg);
+    return { version: DEFAULT_TILE_VERSION, authStatus: isTabIssue ? 'noTab' : 'unknown' };
   }
 }
 
@@ -180,21 +227,22 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
       });
 
       const url = `https://www.strava.com/tiles/segments/${tileVersion}/${tile.z}/${tile.x}/${tile.y}?${params}`;
-      const resp = await fetch(url, {
-        credentials: 'include',
-        headers: { 'Referer': 'https://www.strava.com/maps' }
-      });
+      const r = await stravaFetch(url, { binary: true });
 
-      if (resp.status === 401 || resp.status === 403) {
+      if (r.error) {
+        stats.error++;
+        continue;
+      }
+      if (r.status === 401 || r.status === 403) {
         stats.auth++;
         continue;
       }
-      if (!resp.ok) {
+      if (r.status < 200 || r.status >= 300) {
         stats.error++;
         continue;
       }
 
-      const buf = await resp.arrayBuffer();
+      const buf = base64ToArrayBuffer(r.body || '');
       if (buf.byteLength === 0) {
         stats.empty++;
         continue;

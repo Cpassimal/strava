@@ -1,7 +1,7 @@
 import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT } from '../lib/config.js';
 import { centerRadiusToBounds, filterSegmentsByRadius, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
 import { computeAthleteProfile, feasibilityRatio, SPORT_CONFIG } from '../lib/gap.js';
-import { fetchTileSegments } from '../lib/tiles.js';
+import { fetchTileSegments, closeStravaProxyTab } from '../lib/tiles.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
@@ -1057,6 +1057,8 @@ async function refreshEntireSearch(searchId) {
   } catch (err) {
     finishSearch(`Erreur: ${err.message}`);
     console.error(err);
+  } finally {
+    closeStravaProxyTab();
   }
 }
 
@@ -1395,6 +1397,10 @@ async function discoverSegmentsFromTiles(sport, center, radius, surface) {
  *  "not logged in" vs "logged in but cookies blocked for extension". */
 async function buildTileAuthMessage(stats) {
   const versionStatus = stats && stats.versionAuthStatus;
+  if (versionStatus === 'noTab') {
+    return `Ouvre <a href="https://www.strava.com/dashboard" target="_blank" rel="noopener">strava.com</a> dans un onglet `
+      + `et garde-le ouvert pendant la recherche (l'extension s'en sert pour lire tes sessions).`;
+  }
   if (versionStatus === 'formatChanged') {
     return `Strava a change le format de sa page /maps. L'extension a besoin d'une mise a jour.`;
   }
@@ -1573,6 +1579,8 @@ async function startSearch() {
   } catch (err) {
     finishSearch(`Erreur: ${err.message}`);
     console.error(err);
+  } finally {
+    closeStravaProxyTab();
   }
 }
 
