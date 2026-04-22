@@ -65,6 +65,29 @@ async function getTileVersion() {
     return { version: cachedTileVersion, authStatus: 'ok' };
   }
   try {
+    if (chrome && chrome.cookies && chrome.cookies.getAll) {
+      try {
+        const all = [
+          ...(await chrome.cookies.getAll({ domain: '.strava.com' })),
+          ...(await chrome.cookies.getAll({ domain: 'strava.com' })),
+          ...(await chrome.cookies.getAll({ domain: 'www.strava.com' }))
+        ];
+        const dedup = Array.from(new Map(all.map(c => [c.name + '|' + c.domain, c])).values());
+        console.log('[DEBUG cookies] total strava.com cookies:', dedup.length);
+        const interesting = dedup.filter(c => /session|auth|csrf|remember/i.test(c.name));
+        console.log('[DEBUG cookies] session-like:', interesting.map(c => ({
+          name: c.name,
+          domain: c.domain,
+          sameSite: c.sameSite,
+          secure: c.secure,
+          httpOnly: c.httpOnly,
+          partitionKey: c.partitionKey,
+          expires: c.expirationDate ? new Date(c.expirationDate * 1000).toISOString() : 'session'
+        })));
+      } catch (e) {
+        console.warn('[DEBUG cookies] error:', e.message);
+      }
+    }
     const resp = await fetch('https://www.strava.com/maps', {
       credentials: 'include',
       headers: { 'Referer': 'https://www.strava.com/' }
