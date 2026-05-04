@@ -478,25 +478,38 @@ function autoCalibrate() {
     bestDist = rawDist;
   }
 
-  const warnMsg = 'Données trop homogènes pour calibrer ce facteur — valeur inchangée.';
+  const BALANCED_PCT = 5;
+  const HIT_LO = MIN_BOUND + 2;
+  const HIT_HI = MAX_BOUND - 2;
+  const deviationOf = split => (split.avgBelow > 0 && split.avgAbove > 0)
+    ? Math.abs(split.avgAbove - split.avgBelow) / ((split.avgAbove + split.avgBelow) / 2) * 100
+    : Infinity;
 
-  // D+ factor: apply or warn
-  if (rawDplus <= MIN_BOUND + 2 || rawDplus >= MAX_BOUND - 2) {
-    warnElev.textContent = warnMsg;
-    warnElev.style.display = 'block';
-  } else {
-    document.getElementById('dplus-factor').value = bestDplus;
-    warnElev.style.display = 'none';
-  }
+  // Pour chaque facteur: applique si la dichotomie converge dans les bornes;
+  // sinon garde la valeur courante. Warning seulement si bornes touchées ET
+  // déséquilibre > 5% (sinon les données sont déjà équilibrées avec la valeur actuelle).
+  const applyOrWarn = (rawX, currentX, otherX, splitKey, median, inputId, warnEl) => {
+    const hitBound = rawX <= HIT_LO || rawX >= HIT_HI;
+    if (!hitBound) {
+      document.getElementById(inputId).value = rawX;
+      warnEl.style.display = 'none';
+      return;
+    }
+    const dev = deviationOf(avgPerfForSplit(activities, splitKey, median, currentX, otherX));
+    if (dev > BALANCED_PCT) {
+      warnEl.textContent = `Données déséquilibrées (Δ=${dev.toFixed(0)}%) — calibrage hors bornes, valeur conservée.`;
+      warnEl.style.display = 'block';
+    } else {
+      warnEl.style.display = 'none';
+    }
+  };
 
-  // Dist factor: apply or warn
-  if (rawDist <= MIN_BOUND + 2 || rawDist >= MAX_BOUND - 2) {
-    warnDist.textContent = warnMsg;
-    warnDist.style.display = 'block';
-  } else {
-    document.getElementById('dist-bonus-factor').value = bestDist;
-    warnDist.style.display = 'none';
-  }
+  const currentDplus = parseInt(document.getElementById('dplus-factor').value) || 185;
+  const currentDist = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
+  applyOrWarn(rawDplus, currentDplus, currentDist, 'D_plus', medianElev, 'dplus-factor', warnElev);
+  // Re-read after potential update so the dist deviation uses the just-applied D+ if any
+  const dplusForDist = parseInt(document.getElementById('dplus-factor').value) || currentDplus;
+  applyOrWarn(rawDist, currentDist, dplusForDist, 'Distance_km', medianDist, 'dist-bonus-factor', warnDist);
 
   updateCalibrationIndicators();
   updateDashboard();
