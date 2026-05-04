@@ -133,3 +133,12 @@ L'API Strava limite a 100 requetes / 15 min et 1000 / jour. L'extension gere aut
 
 **Comment fonctionne le score de faisabilite ?**
 Le score compare le KOM d'un segment a ton niveau estime. Il utilise le GAP (allure ajustee au denivele) pour normaliser les efforts, la formule de Riegel pour projeter ta vitesse a la distance du segment, et un facteur d'effort training/race. Le ratio resultant indique si le KOM est a ta portee (< 1.0), realiste (~1.0), ambitieux (1.0-1.2) ou hors portee (> 1.2).
+
+**Comment fonctionne le score de performance du dashboard ?**
+La formule est `score = 5 × (vitesse_equivalente × bonus_endurance) / sqrt(hrEffort)` ou :
+- `vitesse_equivalente = (distance + D+/facteurD+) / duree` — convertit le D+ en distance equivalente
+- `bonus_endurance = 1 + distance/facteurDist` — recompense les longues sorties
+- `hrEffort = (FC_moyenne - FC_repos) / (FC_max - FC_repos)` — % de la reserve cardiaque
+- La racine carree du `hrEffort` (pas une division lineaire) reflete le plateau physiologique HR/allure : un HR bas n'est pas sur-recompense, un HR haut (seance qualite) n'est pas sur-puni
+- Le facteur 5 cale les valeurs typiques sur 0-100 (sans plafond dur — un PR peut depasser 100)
+- Les facteurs D+ et distance sont calibrables dans les parametres pour neutraliser le score vis-a-vis du profil de sortie

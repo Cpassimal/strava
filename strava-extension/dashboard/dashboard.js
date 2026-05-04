@@ -310,6 +310,8 @@ function hmsToHours(str) {
   return isNaN(s) ? 0 : s / 3600;
 }
 
+const SCORE_SCALE = 5;  // magnitude only: bring typical runs into ~0-100, no hard cap
+
 function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor, fallbackHrEffort) {
   if (hours <= 0) return 0;
   const equivDist = dist + (elev / dplusFactor);
@@ -323,7 +325,8 @@ function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFac
   } else {
     hrEffort = fallbackHrEffort || 0.65;
   }
-  const score = (equivSpeed * enduranceBonus) / hrEffort;
+  // sqrt(hrEffort): pénalité HR concave — colle au plateau HR/pace (bas HR moins boosté, haut HR moins puni)
+  const score = SCORE_SCALE * (equivSpeed * enduranceBonus) / Math.sqrt(hrEffort);
   return isFinite(score) ? score : 0;
 }
 
@@ -573,7 +576,7 @@ function renderActivitiesTable() {
   tbody.innerHTML = page.map(a => {
     const date = DateTime.fromISO(a.Date);
     const dateStr = date.isValid ? date.toFormat('dd/MM/yyyy HH:mm') : a.Date;
-    const score = a.score ? a.score.toFixed(2) : '-';
+    const score = a.score ? a.score.toFixed(1) : '-';
     const excluded = a.Excluded;
     return `<tr class="${excluded ? 'excluded' : ''}">
       <td>${dateStr}</td>
@@ -699,7 +702,7 @@ function updateDashboard() {
   document.getElementById('kpi-dist').textContent = totalDist.toFixed(1) + ' km';
   document.getElementById('kpi-elev').textContent = Math.round(totalElev) + ' m';
   document.getElementById('kpi-time').textContent = Math.floor(totalHours) + 'h';
-  document.getElementById('kpi-score').textContent = countForScore > 0 ? (totalPerfScore / countForScore).toFixed(2) : '0';
+  document.getElementById('kpi-score').textContent = countForScore > 0 ? (totalPerfScore / countForScore).toFixed(1) : '0';
   document.getElementById('kpi-avg-charge').textContent = totalCount > 0 ? (totalCharge / totalCount).toFixed(1) : '0';
 
   // Median distance
@@ -793,7 +796,7 @@ function renderCharts(labels, data) {
   function safeNum(v) { return isFinite(v) ? v : 0; }
 
   // 1. Performance
-  const perfData = labels.map(w => safeNum(data[w].perfCount > 0 ? data[w].perfSum / data[w].perfCount : 0).toFixed(2));
+  const perfData = labels.map(w => safeNum(data[w].perfCount > 0 ? data[w].perfSum / data[w].perfCount : 0).toFixed(1));
   const perfDatasets = [{
     label: 'Indice de Performance',
     data: perfData,
