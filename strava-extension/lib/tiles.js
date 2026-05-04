@@ -49,84 +49,6 @@ let cachedTileVersion = null;
 let tileVersionFetchedAt = 0;
 const VERSION_TTL_MS = 60 * 60 * 1000;   // re-fetch every hour
 
-// Chrome partitions cookies by top-level site; session cookies set during
-// normal strava.com navigation are not visible to extension-origin fetches.
-// We sidestep this by proxying fetches through a strava.com tab via
-// chrome.scripting — the fetch then runs first-party and cookies flow.
-let stravaTabId = null;
-
-/** Find a user-opened strava.com tab. We deliberately do NOT open one
- *  ourselves: Chrome 147+ partitions cookies for extension-created tabs
- *  onto the extension's origin, so session cookies don't flow. Only
- *  user-navigated tabs reliably carry first-party strava.com cookies. */
-async function getStravaTabId() {
-  if (stravaTabId != null) {
-    try {
-      const t = await chrome.tabs.get(stravaTabId);
-      if (t && /strava\.com/.test(t.url || '')) return stravaTabId;
-    } catch { /* tab gone */ }
-    stravaTabId = null;
-  }
-  // Broad match: any window, any strava.com page (www, app, subdomains).
-  const queried = await Promise.all([
-    chrome.tabs.query({ url: '*://www.strava.com/*' }),
-    chrome.tabs.query({ url: '*://*.strava.com/*' }),
-    chrome.tabs.query({ url: '*://strava.com/*' })
-  ]);
-  const all = queried.flat();
-  const dedup = Array.from(new Map(all.map(t => [t.id, t])).values());
-  console.log('[tiles] strava.com tabs found:', dedup.map(t => ({ id: t.id, url: t.url, status: t.status, windowId: t.windowId, incognito: t.incognito })));
-  if (!dedup.length) throw new Error('NO_STRAVA_TAB');
-  const picked = dedup.find(t => t.status === 'complete' && /^https:\/\/www\.strava\.com\//.test(t.url || ''))
-    || dedup.find(t => t.status === 'complete')
-    || dedup[0];
-  console.log('[tiles] using tab', picked.id, picked.url);
-  stravaTabId = picked.id;
-  return stravaTabId;
-}
-
-export async function closeStravaProxyTab() {
-  stravaTabId = null;
-}
-
-/** Fetch a strava.com URL from within a strava.com tab context so session
- *  cookies are sent. Returns { status, finalUrl, body } where body is a
- *  string (text mode) or base64 (binary mode), or { error } on failure. */
-async function stravaFetch(url, { binary = false } = {}) {
-  const tabId = await getStravaTabId();
-  const [entry] = await chrome.scripting.executeScript({
-    target: { tabId },
-    args: [url, binary],
-    func: async (u, bin) => {
-      try {
-        const r = await fetch(u, { credentials: 'include' });
-        const status = r.status;
-        const finalUrl = r.url;
-        const docCookieSummary = (document.cookie || '').split(';').map(c => c.trim().split('=')[0]).filter(Boolean);
-        if (bin) {
-          const buf = await r.arrayBuffer();
-          const bytes = new Uint8Array(buf);
-          let s = '';
-          for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-          return { status, finalUrl, body: btoa(s), docCookieSummary };
-        }
-        return { status, finalUrl, body: await r.text(), docCookieSummary };
-      } catch (e) {
-        return { error: e.message || String(e) };
-      }
-    }
-  });
-  return entry && entry.result ? entry.result : { error: 'no script result' };
-}
-
-function base64ToArrayBuffer(b64) {
-  const binStr = atob(b64);
-  const buf = new ArrayBuffer(binStr.length);
-  const view = new Uint8Array(buf);
-  for (let i = 0; i < binStr.length; i++) view[i] = binStr.charCodeAt(i);
-  return buf;
-}
-
 /**
  * Fetch the current tile version from strava.com/maps.
  * Strava embeds it in the page JS, we grep for it.
@@ -135,7 +57,6 @@ function base64ToArrayBuffer(b64) {
  *   'ok'            — /maps loaded authenticated, tile version extracted
  *   'loggedOut'     — /maps redirected to /login (no session or cookies stripped)
  *   'formatChanged' — /maps loaded OK but the tile version pattern is gone
- *   'noTab'         — couldn't find or open a strava.com tab to proxy through
  *   'unknown'       — network error or non-ok status
  */
 async function getTileVersion() {
@@ -144,29 +65,16 @@ async function getTileVersion() {
     return { version: cachedTileVersion, authStatus: 'ok' };
   }
   try {
-    const r = await stravaFetch('https://www.strava.com/maps', { binary: false });
-    if (r.error) {
-      console.warn('[tiles] stravaFetch /maps error:', r.error);
-      return { version: DEFAULT_TILE_VERSION, authStatus: /tab|NO_STRAVA_TAB/i.test(r.error) ? 'noTab' : 'unknown' };
-    }
-
-    console.log('[tiles] /maps via tab →', {
-      status: r.status,
-      finalUrl: r.finalUrl,
-      htmlLen: (r.body || '').length,
-      hasTileVersion: /\/tiles\/segments\/(\d+)\//.test(r.body || ''),
-      docCookies: r.docCookieSummary
-    });
-
-    const finalUrl = r.finalUrl || '';
+    const r = await fetch('https://www.strava.com/maps', { credentials: 'include' });
+    const finalUrl = r.url || '';
     if (/\/(login|session|sign[_-]?in)/i.test(finalUrl)) {
       return { version: DEFAULT_TILE_VERSION, authStatus: 'loggedOut' };
     }
-    if (r.status < 200 || r.status >= 300) {
+    if (!r.ok) {
       return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
     }
 
-    const html = r.body || '';
+    const html = await r.text();
     const match = html.match(/\/tiles\/segments\/(\d+)\//);
     if (match) {
       cachedTileVersion = parseInt(match[1], 10);
@@ -182,9 +90,7 @@ async function getTileVersion() {
     return { version: DEFAULT_TILE_VERSION, authStatus: 'formatChanged' };
   } catch (err) {
     console.warn('getTileVersion error:', err.message);
-    const msg = err.message || '';
-    const isTabIssue = /Cannot access|No tab|scripting|permission|tab/i.test(msg);
-    return { version: DEFAULT_TILE_VERSION, authStatus: isTabIssue ? 'noTab' : 'unknown' };
+    return { version: DEFAULT_TILE_VERSION, authStatus: 'unknown' };
   }
 }
 
@@ -219,22 +125,18 @@ export async function fetchTileSegments(bounds, sport, radiusKm, onProgress, sur
       });
 
       const url = `https://www.strava.com/tiles/segments/${tileVersion}/${tile.z}/${tile.x}/${tile.y}?${params}`;
-      const r = await stravaFetch(url, { binary: true });
+      const r = await fetch(url, { credentials: 'include' });
 
-      if (r.error) {
-        stats.error++;
-        continue;
-      }
       if (r.status === 401 || r.status === 403) {
         stats.auth++;
         continue;
       }
-      if (r.status < 200 || r.status >= 300) {
+      if (!r.ok) {
         stats.error++;
         continue;
       }
 
-      const buf = base64ToArrayBuffer(r.body || '');
+      const buf = await r.arrayBuffer();
       if (buf.byteLength === 0) {
         stats.empty++;
         continue;

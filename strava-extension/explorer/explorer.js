@@ -1,7 +1,7 @@
 import { STRAVA_API_BASE, STORAGE_KEYS, SEGMENT_DEFAULTS, RATE_LIMIT } from '../lib/config.js';
 import { centerRadiusToBounds, filterSegmentsByRadius, decodePolyline, parseTimeToSeconds, formatSeconds, formatPace, formatSpeed } from '../lib/geo.js';
 import { computeAthleteProfile, feasibilityRatio, SPORT_CONFIG } from '../lib/gap.js';
-import { fetchTileSegments, closeStravaProxyTab } from '../lib/tiles.js';
+import { fetchTileSegments } from '../lib/tiles.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
@@ -1004,8 +1004,14 @@ async function refreshEntireSearch(searchId) {
     const searchSport = search.params.sport || (search.params.activityType === 'riding' ? 'riding' : 'running');
 
     setProgress(0, 'Re-exploration via tiles...');
+    if ((await hasStravaSessionCookie()) === false) {
+      finishSearch('');
+      showStravaLoginWarning(await buildTileAuthMessage({ versionAuthStatus: 'loggedOut' }));
+      return;
+    }
     const tileResult = await fetchTileSegments(bounds, searchSport, radius, null, search.params.surface || '0');
-    if (tileResult.stats.auth > 0 && tileResult.segments.length === 0) {
+    if ((tileResult.stats.auth > 0 || (tileResult.stats.versionAuthStatus && tileResult.stats.versionAuthStatus !== 'ok'))
+        && tileResult.segments.length === 0) {
       finishSearch('');
       showStravaLoginWarning(await buildTileAuthMessage(tileResult.stats));
       return;
@@ -1057,8 +1063,6 @@ async function refreshEntireSearch(searchId) {
   } catch (err) {
     finishSearch(`Erreur: ${err.message}`);
     console.error(err);
-  } finally {
-    closeStravaProxyTab();
   }
 }
 
@@ -1368,6 +1372,9 @@ async function addSegmentByUrl() {
  */
 async function discoverSegmentsFromTiles(sport, center, radius, surface) {
   setProgress(0, 'Decouverte via tiles...');
+  if ((await hasStravaSessionCookie()) === false) {
+    return { tileSegments: [], authFailed: true, stats: { versionAuthStatus: 'loggedOut' } };
+  }
   const bounds = centerRadiusToBounds(center.lat, center.lng, radius);
   try {
     const tileResult = await fetchTileSegments(bounds, sport, radius, (done, total, segs) => {
@@ -1392,35 +1399,15 @@ async function discoverSegmentsFromTiles(sport, center, radius, surface) {
   }
 }
 
-/** Build a user-facing message explaining why tile fetching failed.
- *  Combines tile version auth status + browser cookie presence to differentiate
- *  "not logged in" vs "logged in but cookies blocked for extension". */
+/** Build a user-facing message explaining why tile fetching failed. */
 async function buildTileAuthMessage(stats) {
   const versionStatus = stats && stats.versionAuthStatus;
-  if (versionStatus === 'noTab') {
-    return `<strong>Ouvre <a href="https://www.strava.com/dashboard" target="_blank" rel="noopener">strava.com</a> dans un onglet de ce navigateur</strong>, `
-      + `laisse-le ouvert, puis relance la recherche. `
-      + `L'extension passe par cet onglet pour lire ta session (cookies partitionnes sur Chrome 147+).`;
-  }
   if (versionStatus === 'formatChanged') {
     return `Strava a change le format de sa page /maps. L'extension a besoin d'une mise a jour.`;
   }
   if (versionStatus === 'unknown') {
     return `Impossible de contacter strava.com. Verifiez votre connexion reseau.`;
   }
-
-  // versionStatus 'loggedOut' OR 'ok' (but tiles still 401) → same diagnosis flow.
-  const hasCookie = await hasStravaSessionCookie();
-  if (hasCookie === true) {
-    return `Cookies Strava detectes dans le navigateur mais bloques pour cette extension. `
-      + `Ouvre <code>chrome://settings/cookies</code>, ajoute <strong>strava.com</strong> aux sites autorises, `
-      + `ou desactive "Bloquer les cookies tiers". Puis recharge cette page.`;
-  }
-  if (hasCookie === false) {
-    return `Connexion a <a href="https://www.strava.com/login" target="_blank" rel="noopener">strava.com</a> `
-      + `requise dans ce navigateur pour la decouverte de segments.`;
-  }
-  // hasCookie === null (API unavailable)
   return `Connexion a <a href="https://www.strava.com/login" target="_blank" rel="noopener">strava.com</a> `
     + `requise dans ce navigateur pour la decouverte de segments.`;
 }
@@ -1580,8 +1567,6 @@ async function startSearch() {
   } catch (err) {
     finishSearch(`Erreur: ${err.message}`);
     console.error(err);
-  } finally {
-    closeStravaProxyTab();
   }
 }
 
