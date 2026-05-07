@@ -11,12 +11,19 @@ const USER_CONFIG_KEY = 'user_config';
 
 // ─── User Config ───
 const CONFIG_FIELDS = {
-  inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor', 'heat-intensity', 'heat-radius'],
+  inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'],
   checkboxes: ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge']
 };
 
 function saveUserConfig() {
-  const config = { window: currentWindow, sports: [], heatMode: heatmapState.mode };
+  // Snapshot current sliders into the active mode's slot before persisting.
+  syncHeatSlidersToState();
+  const config = {
+    window: currentWindow,
+    sports: [],
+    heatMode: heatmapState.mode,
+    heatModeValues: heatmapState.modeValues
+  };
   CONFIG_FIELDS.inputs.forEach(id => {
     config[id] = document.getElementById(id).value;
   });
@@ -32,9 +39,10 @@ async function restoreUserConfig() {
   const config = data[USER_CONFIG_KEY];
   if (!config) return;
 
-  // Apply heatmap mode BEFORE input restore: setHeatmapMode adjusts the radius
-  // slider's min/max — restoring the saved value afterwards keeps it in range.
-  if (config.heatMode) setHeatmapMode(config.heatMode);
+  if (config.heatModeValues) {
+    heatmapState.modeValues = { ...heatmapState.modeValues, ...config.heatModeValues };
+  }
+  if (config.heatMode) setHeatmapMode(config.heatMode, { skipSync: true });
 
   CONFIG_FIELDS.inputs.forEach(id => {
     if (config[id] !== undefined) document.getElementById(id).value = config[id];
@@ -538,7 +546,34 @@ function switchTab(tabName) {
 }
 
 // ─── Heatmap ───
-const heatmapState = { map: null, layer: null, dirty: true, mode: 'heat', fitNeeded: true };
+const heatmapState = {
+  map: null,
+  layer: null,
+  dirty: true,
+  mode: 'heat',
+  fitNeeded: true,
+  modeValues: {
+    heat: { intensity: 0.6, radius: 6 },
+    lines: { intensity: 0.6, radius: 2 }
+  }
+};
+
+function syncHeatSlidersToState() {
+  const intensityEl = document.getElementById('heat-intensity');
+  const radiusEl = document.getElementById('heat-radius');
+  if (!intensityEl || !radiusEl) return;
+  heatmapState.modeValues[heatmapState.mode] = {
+    intensity: parseFloat(intensityEl.value),
+    radius: parseInt(radiusEl.value, 10)
+  };
+}
+
+function applyModeValuesToSliders(mode) {
+  const v = heatmapState.modeValues[mode];
+  if (!v) return;
+  document.getElementById('heat-intensity').value = v.intensity;
+  document.getElementById('heat-radius').value = v.radius;
+}
 
 function decodePolyline(encoded) {
   const points = [];
@@ -667,7 +702,12 @@ function doRenderHeatmap() {
   heatmapState.dirty = false;
 }
 
-function setHeatmapMode(mode) {
+function setHeatmapMode(mode, opts = {}) {
+  // Snapshot outgoing mode's slider values before swapping (unless we're in
+  // initial restore: sliders haven't been touched yet by the user).
+  if (!opts.skipSync && heatmapState.mode !== mode) {
+    syncHeatSlidersToState();
+  }
   heatmapState.mode = mode;
   heatmapState.dirty = true;
   document.querySelectorAll('#heat-mode-selector .type-pill').forEach(p => {
@@ -681,13 +721,13 @@ function setHeatmapMode(mode) {
     label1.textContent = 'Intensité';
     label2.textContent = 'Rayon';
     radius.min = 2; radius.max = 20;
-    if (parseInt(radius.value, 10) < 2) radius.value = 6;
   } else {
     label1.textContent = 'Opacité';
     label2.textContent = 'Épaisseur';
     radius.min = 1; radius.max = 6;
-    if (parseInt(radius.value, 10) > 6) radius.value = 2;
   }
+  // Load incoming mode's stored slider values.
+  applyModeValuesToSliders(mode);
   if (currentTab === 'heatmap') renderHeatmap();
 }
 
