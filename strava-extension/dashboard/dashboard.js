@@ -11,12 +11,12 @@ const USER_CONFIG_KEY = 'user_config';
 
 // ─── User Config ───
 const CONFIG_FIELDS = {
-  inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'],
+  inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor', 'heat-intensity', 'heat-radius'],
   checkboxes: ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge']
 };
 
 function saveUserConfig() {
-  const config = { window: currentWindow, sports: [] };
+  const config = { window: currentWindow, sports: [], heatMode: heatmapState.mode };
   CONFIG_FIELDS.inputs.forEach(id => {
     config[id] = document.getElementById(id).value;
   });
@@ -31,6 +31,10 @@ async function restoreUserConfig() {
   const data = await chrome.storage.local.get(USER_CONFIG_KEY);
   const config = data[USER_CONFIG_KEY];
   if (!config) return;
+
+  // Apply heatmap mode BEFORE input restore: setHeatmapMode adjusts the radius
+  // slider's min/max — restoring the saved value afterwards keeps it in range.
+  if (config.heatMode) setHeatmapMode(config.heatMode);
 
   CONFIG_FIELDS.inputs.forEach(id => {
     if (config[id] !== undefined) document.getElementById(id).value = config[id];
@@ -1123,11 +1127,15 @@ document.querySelectorAll('.tab').forEach(tab => {
 ['heat-intensity', 'heat-radius'].forEach(id => {
   document.getElementById(id).addEventListener('input', () => {
     heatmapState.dirty = true;
+    saveUserConfig();
     if (currentTab === 'heatmap') renderHeatmap();
   });
 });
 document.querySelectorAll('#heat-mode-selector .type-pill').forEach(pill => {
-  pill.addEventListener('click', () => setHeatmapMode(pill.dataset.mode));
+  pill.addEventListener('click', () => {
+    setHeatmapMode(pill.dataset.mode);
+    saveUserConfig();
+  });
 });
 
 // Table sort
