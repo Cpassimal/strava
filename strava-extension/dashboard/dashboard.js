@@ -530,6 +530,167 @@ function switchTab(tabName) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.getElementById(`tab-${tabName}`).classList.add('active');
+  if (tabName === 'heatmap') renderHeatmap();
+}
+
+// ─── Heatmap ───
+const heatmapState = { map: null, layer: null, dirty: true, mode: 'heat', fitNeeded: true };
+
+function decodePolyline(encoded) {
+  const points = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    let b, shift = 0, result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    points.push([lat / 1e5, lng / 1e5]);
+  }
+  return points;
+}
+
+function initHeatmapMap() {
+  if (heatmapState.map) return;
+  heatmapState.map = L.map('heatmap-container', { preferCanvas: true }).setView([46.6, 2.5], 5);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+    maxZoom: 19
+  }).addTo(heatmapState.map);
+}
+
+function renderHeatmap() {
+  // Defer to next frame: the tab was just made visible via .active class,
+  // and Leaflet/heatLayer need real container dimensions before the canvas
+  // is created (otherwise getImageData on a 0×0 canvas throws).
+  requestAnimationFrame(() => {
+    const container = document.getElementById('heatmap-container');
+    if (container.clientWidth === 0 || container.clientHeight === 0) {
+      // Still not laid out — try again next frame.
+      requestAnimationFrame(() => renderHeatmap());
+      return;
+    }
+    doRenderHeatmap();
+  });
+}
+
+function doRenderHeatmap() {
+  initHeatmapMap();
+  heatmapState.map.invalidateSize();
+  if (!heatmapState.dirty && heatmapState.layer) return;
+
+  // Decode all polylines once; both modes consume them.
+  const tracks = [];
+  let withPoly = 0, withoutPoly = 0;
+  for (const act of lastFilteredActivities) {
+    if (!act.Map_polyline) { withoutPoly++; continue; }
+    withPoly++;
+    tracks.push(decodePolyline(act.Map_polyline));
+  }
+
+  const slider1 = parseFloat(document.getElementById('heat-intensity').value);
+  const slider2 = parseInt(document.getElementById('heat-radius').value, 10);
+
+  if (heatmapState.layer) {
+    heatmapState.map.removeLayer(heatmapState.layer);
+    heatmapState.layer = null;
+  }
+
+  let pointCount = 0;
+  let allBoundsLats = [], allBoundsLngs = [];
+
+  if (tracks.length > 0) {
+    if (heatmapState.mode === 'heat') {
+      // Sub-sample to cap at ~60k points for perf.
+      const totalRaw = tracks.reduce((s, t) => s + t.length, 0);
+      const sampleEvery = Math.max(1, Math.floor(totalRaw / 60000));
+      const points = [];
+      for (const pts of tracks) {
+        for (let i = 0; i < pts.length; i += sampleEvery) {
+          points.push([pts[i][0], pts[i][1], slider1]);
+          allBoundsLats.push(pts[i][0]);
+          allBoundsLngs.push(pts[i][1]);
+        }
+      }
+      pointCount = points.length;
+      heatmapState.layer = L.heatLayer(points, {
+        radius: slider2,
+        blur: slider2 * 1.5,
+        maxZoom: 17,
+        max: 1.0,
+        gradient: { 0.2: 'blue', 0.4: 'cyan', 0.6: 'lime', 0.8: 'yellow', 1.0: 'red' }
+      }).addTo(heatmapState.map);
+    } else {
+      // Lines mode: draw each polyline with low opacity, stacking creates density.
+      const group = L.layerGroup();
+      for (const pts of tracks) {
+        L.polyline(pts, {
+          color: '#fc4c02',
+          weight: slider2,
+          opacity: slider1 * 0.4,  // 0.04..0.8 range matches slider 0.1..2
+          smoothFactor: 1.5
+        }).addTo(group);
+        for (const p of pts) { allBoundsLats.push(p[0]); allBoundsLngs.push(p[1]); }
+        pointCount += pts.length;
+      }
+      group.addTo(heatmapState.map);
+      heatmapState.layer = group;
+    }
+
+    if (heatmapState.fitNeeded && allBoundsLats.length > 0) {
+      const bounds = [
+        [Math.min(...allBoundsLats), Math.min(...allBoundsLngs)],
+        [Math.max(...allBoundsLats), Math.max(...allBoundsLngs)]
+      ];
+      heatmapState.map.fitBounds(bounds, { padding: [30, 30] });
+      heatmapState.fitNeeded = false;
+    }
+  }
+
+  const stats = document.getElementById('heat-stats');
+  const noun = heatmapState.mode === 'heat' ? 'points' : 'segments';
+  stats.textContent = `${withPoly} activités tracées${withoutPoly > 0 ? ` · ${withoutPoly} sans tracé` : ''} · ${pointCount} ${noun}`;
+
+  heatmapState.dirty = false;
+}
+
+function setHeatmapMode(mode) {
+  heatmapState.mode = mode;
+  heatmapState.dirty = true;
+  document.querySelectorAll('#heat-mode-selector .type-pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.mode === mode);
+  });
+  // Adapt labels and slider ranges to the active mode.
+  const label1 = document.getElementById('heat-label-1');
+  const label2 = document.getElementById('heat-label-2');
+  const radius = document.getElementById('heat-radius');
+  if (mode === 'heat') {
+    label1.textContent = 'Intensité';
+    label2.textContent = 'Rayon';
+    radius.min = 2; radius.max = 20;
+    if (parseInt(radius.value, 10) < 2) radius.value = 6;
+  } else {
+    label1.textContent = 'Opacité';
+    label2.textContent = 'Épaisseur';
+    radius.min = 1; radius.max = 6;
+    if (parseInt(radius.value, 10) > 6) radius.value = 2;
+  }
+  if (currentTab === 'heatmap') renderHeatmap();
+}
+
+function invalidateHeatmap() {
+  heatmapState.dirty = true;
+  heatmapState.fitNeeded = true;  // filter change → refit to new data extent
+  if (currentTab === 'heatmap') renderHeatmap();
 }
 
 function selectWindow(el) {
@@ -763,6 +924,7 @@ function updateDashboard() {
   });
   activitiesPage = 1;
   renderActivitiesTable();
+  invalidateHeatmap();
 
   // Toggle "Pas de données" messages
   const chartIds = ['c1', 'c2', 'c3', 'c4'];
@@ -955,6 +1117,17 @@ document.querySelectorAll('#window-selector .type-pill').forEach(pill => {
 // Tabs
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+});
+
+// Heatmap controls
+['heat-intensity', 'heat-radius'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    heatmapState.dirty = true;
+    if (currentTab === 'heatmap') renderHeatmap();
+  });
+});
+document.querySelectorAll('#heat-mode-selector .type-pill').forEach(pill => {
+  pill.addEventListener('click', () => setHeatmapMode(pill.dataset.mode));
 });
 
 // Table sort

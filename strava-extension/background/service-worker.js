@@ -1,4 +1,4 @@
-import { authenticate, fetchActivities, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
+import { authenticate, fetchActivities, backfillPolylines, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
 import { STORAGE_KEYS } from '../lib/config.js';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -109,8 +109,22 @@ async function refreshData() {
 
   const allActivities = [...existing, ...toAdd];
 
-  if (toAdd.length > 0) {
-    broadcastProgress('save', `Sauvegarde de ${toAdd.length} nouvelles activités...`);
+  const missingPolyline = allActivities.filter(a => !('Map_polyline' in a)).length;
+  let backfilled = 0;
+  if (missingPolyline > 0) {
+    broadcastProgress('backfill', `Récupération des tracés (${missingPolyline} activités)...`);
+    try {
+      const res = await backfillPolylines(allActivities, ({ remaining, filled, totalNeeded }) => {
+        broadcastProgress('backfill', `Tracés: ${filled}/${totalNeeded}...`);
+      });
+      backfilled = res.filled;
+    } catch (e) {
+      console.warn('Backfill polylines failed:', e);
+    }
+  }
+
+  if (toAdd.length > 0 || backfilled > 0) {
+    broadcastProgress('save', `Sauvegarde...`);
     await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities });
   }
 

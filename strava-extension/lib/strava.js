@@ -145,7 +145,8 @@ export async function fetchActivities(afterTimestamp = null, onProgress = null) 
         Duree: secondsToHMS(act.moving_time),
         D_plus: Math.round(act.total_elevation_gain),
         Lien_activite: `https://www.strava.com/activities/${act.id}`,
-        Moyenne_FC: act.average_heartrate || ''
+        Moyenne_FC: act.average_heartrate || '',
+        Map_polyline: act.map?.summary_polyline || null
       });
     }
 
@@ -154,6 +155,66 @@ export async function fetchActivities(afterTimestamp = null, onProgress = null) 
   }
 
   return allActivities;
+}
+
+/**
+ * Re-fetch the activity list endpoint to backfill `Map_polyline` on existing
+ * activities that don't have it yet (older entries fetched before the field
+ * was tracked). Uses summary_polyline from the list response — no detail call.
+ *
+ * Activities are returned newest first; we stop early once every needed ID
+ * has been seen. Returns a new array; caller persists it.
+ */
+export async function backfillPolylines(existingActivities, onProgress = null) {
+  // "never tried" = field absent. null means tried-but-empty (no GPS), skip.
+  const needed = new Map();
+  for (const a of existingActivities) {
+    if (!('Map_polyline' in a)) needed.set(String(a.ID), a);
+  }
+  if (needed.size === 0) return { activities: existingActivities, filled: 0 };
+
+  const token = await ensureValidToken();
+  const perPage = 100;
+  let page = 1;
+  let filled = 0;
+  const totalNeeded = needed.size;
+
+  while (needed.size > 0) {
+    if (onProgress) onProgress({ page, remaining: needed.size, filled, totalNeeded });
+
+    const params = new URLSearchParams({ page, per_page: perPage });
+    const response = await fetch(`${STRAVA_API_BASE}/athlete/activities?${params}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+
+    if (!response.ok) {
+      if (response.status === 429) throw new Error('Rate limit Strava atteint. Réessayez dans 15 minutes.');
+      throw new Error(`Erreur API Strava: ${response.status}`);
+    }
+
+    const acts = await response.json();
+    if (acts.length === 0) break;
+
+    for (const act of acts) {
+      const target = needed.get(String(act.id));
+      if (target) {
+        target.Map_polyline = act.map?.summary_polyline || null;
+        needed.delete(String(act.id));
+        filled++;
+      }
+    }
+
+    if (acts.length < perPage) break;
+    page++;
+  }
+
+  // Anything still in `needed` wasn't found in the list (deleted/private?) —
+  // mark as null so we don't retry forever.
+  for (const a of needed.values()) {
+    a.Map_polyline = null;
+  }
+
+  return { activities: existingActivities, filled };
 }
 
 export async function disconnectStrava() {
