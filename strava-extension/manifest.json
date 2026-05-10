@@ -3,6 +3,7 @@
   "name": "Strava Performance Dashboard",
   "version": "1.0.0",
   "description": "Dashboard d'analyse de performance Strava",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApyFPo/RqaFD8Lj8lAPpdxx0SSYNnibw9h0qxsI+SHKNvhItGbfU/Tbj8aSau18m/to1ndLJB00kSQKt+Em3C7QCMXHpqAg/m/lp1Ez5+JUFn0c+45D9ss8ZYX707e/JgvjwGuPzaKNUOb0udWVRPvwTaBAmfLmW2a8qK4hhriu+41d0Jyte3n5A9NnGyn48T4hUk/tMgp0cVqpPHoXByFkFNm7ShWRl4+claLTATHeZ2206tOWSqah803/Jxvvd04aEVv6fcp+tQFSFh90iEKG0ssiHrmi+/KLV8N8PDTTk+ZSNf7F0mB6VSF14Tz5I2iOqt8qC846RDmYoAZIgiTwIDAQAB",
   "permissions": [
     "identity",
     "storage",

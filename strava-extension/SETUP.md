@@ -6,68 +6,60 @@
 
 1. Va sur https://www.strava.com/settings/api
 2. Crée une nouvelle application
-3. **Authorization Callback Domain** : mets `<extension-id>.chromiumapp.org`
-   (tu obtiendras l'ID exact après avoir chargé l'extension, étape 4)
+3. **Authorization Callback Domain** : `hfdidibplabogcfajeagpnoobjjgpelb.chromiumapp.org`
 4. Note le **Client ID** et **Client Secret**
 
-### 2. Configurer Google Cloud (pour Google Sheets)
+> L'extension a un ID figé via le champ `key` du manifest, donc le même
+> callback domain marche sur tous les Chrome / tous les PCs où tu charges
+> ce dossier.
 
-1. Va sur https://console.cloud.google.com
-2. Crée un projet (ou utilise un existant)
-3. Active l'API **Google Sheets API**
-4. Va dans **Identifiants** > **Créer des identifiants** > **ID client OAuth**
-5. Type d'application : **Extension Chrome**
-6. ID de l'élément : l'ID de ton extension (visible après chargement)
-7. Copie le **Client ID** généré
-8. Remplace `REPLACE_WITH_YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com` dans `manifest.json`
-
-### 3. Charger l'extension dans Chrome
+### 2. Charger l'extension dans Chrome
 
 1. Ouvre `chrome://extensions/`
 2. Active le **Mode développeur** (en haut à droite)
 3. Clique **Charger l'extension non empaquetée**
 4. Sélectionne le dossier `strava-extension/`
-5. Note l'**ID de l'extension** affiché
+5. Vérifie l'ID affiché : `hfdidibplabogcfajeagpnoobjjgpelb`
 
-### 4. Mettre à jour les callback URLs
-
-- **Strava** : retourne dans les settings de ton app Strava et mets le domain callback :
-  `<ton-extension-id>.chromiumapp.org`
-- **Google** : l'ID client OAuth doit référencer le bon extension ID
-
-### 5. Configurer dans l'extension
+### 3. Configurer dans l'extension
 
 1. Clique sur l'icône de l'extension > **Paramètres**
 2. Entre ton **Client ID** et **Client Secret** Strava > **Sauvegarder**
 3. Clique **Se connecter** pour autoriser Strava
-4. Clique **Créer un nouveau Sheet** (ou lie un existant)
-5. Clique **Rafraîchir** pour importer tes activités!
+4. Clique **Rafraîchir** pour importer tes activités
+
+## Données
+
+Tout est stocké **localement** dans `chrome.storage.local` (extension Chrome).
+Aucune donnée n'est envoyée vers un service tiers (hors Strava pour l'API).
 
 ## Structure
 
 ```
 strava-extension/
-├── manifest.json              # Manifest V3
+├── manifest.json              # Manifest V3 (avec key figée)
 ├── background/
-│   └── service-worker.js      # Logique API (Strava + Sheets)
+│   └── service-worker.js      # Logique API Strava
 ├── lib/
 │   ├── config.js              # Constantes
 │   ├── strava.js              # Wrapper API Strava
-│   └── sheets.js              # Wrapper API Google Sheets
+│   └── geo.js                 # Décodage polylines
 ├── popup/
-│   ├── popup.html/js/css      # Mini popup (status + raccourcis)
+│   └── popup.html/js/css      # Mini popup (status + raccourcis)
 ├── dashboard/
-│   ├── dashboard.html/js/css  # Dashboard complet (port de stats.html)
+│   └── dashboard.html/js/css  # Dashboard complet
+├── explorer/
+│   └── explorer.html/js/css   # Explorateur cartographique
 ├── vendor/
-│   ├── chart.min.js           # Chart.js (local)
-│   └── luxon.min.js           # Luxon (local)
+│   ├── chart.min.js           # Chart.js
+│   ├── luxon.min.js           # Luxon
+│   └── leaflet.{js,css}       # Leaflet
 └── icons/
     └── icon{16,48,128}.png    # Icônes
 ```
 
-## Données
+## Clé privée
 
-Les activités sont stockées dans Google Sheets avec les colonnes :
-`ID, Nom, Type, Date, Distance_km, Duree, D_plus, Lien_activite, Moyenne_FC`
-
-Format identique au CSV original — compatible import/export.
+La clé privée correspondant au champ `key` du manifest est stockée dans
+`../strava-ext-key.pem` (gitignoré). Garde-la précieusement : elle te
+permet de regénérer le même ID si jamais tu perds le manifest.
