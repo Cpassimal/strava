@@ -35,13 +35,11 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
 .migration-banner-content p { margin: 4px 0; line-height: 1.4; }
 .migration-banner-content a { color: #b87a00; }
 .migration-banner-content code {
-  display: inline-block;
   background: #fff;
   border: 1px solid #e5cc7a;
-  padding: 4px 10px;
-  border-radius: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
   font-size: 0.8rem;
-  margin: 4px 0;
   user-select: all;
 }
 .migration-banner button { white-space: nowrap; }
