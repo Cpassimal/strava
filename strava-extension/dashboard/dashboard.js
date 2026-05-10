@@ -1300,17 +1300,24 @@ document.getElementById('btn-disconnect-strava').addEventListener('click', async
 });
 
 // Data management
+const EXPORT_COLUMNS = ['ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC', 'Map_polyline', 'Excluded'];
+
+function csvEscape(value) {
+  if (value === null || value === undefined) return '';
+  const s = String(value);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
 document.getElementById('btn-export-csv').addEventListener('click', async () => {
   const result = await sendMessage({ action: 'loadData' });
   if (!result.activities || result.activities.length === 0) { alert('Aucune donnée à exporter'); return; }
-  const headers = ['ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC', 'Excluded'];
-  const csvRows = [headers.join(',')];
+  const csvRows = [EXPORT_COLUMNS.join(',')];
   result.activities.forEach(a => {
-    csvRows.push([
-      a.ID, `"${(a.Nom || '').replace(/"/g, '""')}"`, a.Type, a.Date,
-      a.Distance_km, a.Duree, a.D_plus, a.Lien_activite, a.Moyenne_FC,
-      a.Excluded ? 'TRUE' : ''
-    ].join(','));
+    csvRows.push(EXPORT_COLUMNS.map(col => {
+      if (col === 'Excluded') return a.Excluded ? 'TRUE' : '';
+      return csvEscape(a[col]);
+    }).join(','));
   });
   const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -1325,21 +1332,31 @@ document.getElementById('btn-import-csv').addEventListener('change', async (e) =
   const file = e.target.files[0];
   if (!file) return;
   const text = await file.text();
-  const lines = text.trim().split('\n');
-  const headers = lines[0].split(',');
+  const rows = parseCSVRows(text);
+  if (rows.length < 2) { alert('Fichier vide ou illisible'); e.target.value = ''; return; }
+  const headers = rows[0];
+  const idx = name => headers.indexOf(name);
   const activities = [];
-  for (let i = 1; i < lines.length; i++) {
-    const vals = lines[i].match(/(".*?"|[^,]*),?/g)?.map(v => v.replace(/,?$/, '').replace(/^"|"$/g, '').replace(/""/g, '"')) || [];
-    if (!vals[0]) continue;
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const id = r[idx('ID')];
+    if (!id) continue;
     activities.push({
-      ID: vals[0], Nom: vals[1] || '', Type: vals[2] || '', Date: vals[3] || '',
-      Distance_km: vals[4] || '', Duree: vals[5] || '', D_plus: vals[6] || '',
-      Lien_activite: vals[7] || '', Moyenne_FC: vals[8] || '',
-      Excluded: vals[9] === 'TRUE'
+      ID: id,
+      Nom: r[idx('Nom')] || '',
+      Type: r[idx('Type')] || '',
+      Date: r[idx('Date')] || '',
+      Distance_km: r[idx('Distance_km')] || '',
+      Duree: r[idx('Duree')] || '',
+      D_plus: r[idx('D_plus')] || '',
+      Lien_activite: r[idx('Lien_activite')] || '',
+      Moyenne_FC: r[idx('Moyenne_FC')] || '',
+      Map_polyline: idx('Map_polyline') >= 0 ? (r[idx('Map_polyline')] || null) : null,
+      Excluded: (r[idx('Excluded')] || '') === 'TRUE'
     });
   }
-  if (activities.length === 0) { alert('Aucune activité trouvée dans le fichier'); return; }
-  if (!confirm(`Importer ${activities.length} activités ? Cela remplacera les données actuelles.`)) return;
+  if (activities.length === 0) { alert('Aucune activité trouvée dans le fichier'); e.target.value = ''; return; }
+  if (!confirm(`Importer ${activities.length} activités ? Cela remplacera les données actuelles.`)) { e.target.value = ''; return; }
   showLoading('Import en cours...');
   await sendMessage({ action: 'importData', activities });
   hideLoading();
@@ -1476,7 +1493,22 @@ document.getElementById('btn-clear-data').addEventListener('click', async () => 
 });
 
 // ─── Init ───
+async function maybeShowMigrationBanner() {
+  const { migration_v2_dismissed } = await chrome.storage.local.get('migration_v2_dismissed');
+  if (migration_v2_dismissed) return;
+  const banner = document.getElementById('migration-banner');
+  const domainEl = document.getElementById('migration-banner-domain');
+  if (!banner || !domainEl) return;
+  domainEl.textContent = `${chrome.runtime.id}.chromiumapp.org`;
+  banner.style.display = 'flex';
+  document.getElementById('btn-dismiss-migration').addEventListener('click', () => {
+    chrome.storage.local.set({ migration_v2_dismissed: true });
+    banner.style.display = 'none';
+  });
+}
+
 async function init() {
+  await maybeShowMigrationBanner();
   await updateTopBar();
   await loadData();
 

@@ -18,6 +18,22 @@
     <h1>Analyse Strava</h1>
   </header>
 
+  <!-- Migration notice (extension ID figée) -->
+  <div id="migration-banner" class="migration-banner" style="display:none;">
+    <div class="migration-banner-content">
+      <strong>Mise à jour importante</strong>
+      <p>
+        L'ID de l'extension a été figé pour fonctionner sur plusieurs PCs.
+        Si tu utilisais déjà cette extension, ton ancien lien Strava ne marche plus.
+        Mets à jour le <em>Authorization Callback Domain</em> sur
+        <a href="https://www.strava.com/settings/api" target="_blank">strava.com/settings/api</a> avec :
+      </p>
+      <code id="migration-banner-domain"></code>
+      <p>Puis ouvre <strong>Paramètres</strong> et clique <strong>Se connecter</strong>.</p>
+    </div>
+    <button class="btn btn-ghost" id="btn-dismiss-migration">Compris</button>
+  </div>
+
   <!-- Top bar: status + actions -->
   <div class="top-bar">
     <div class="top-bar-left">
