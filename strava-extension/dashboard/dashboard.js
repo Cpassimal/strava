@@ -11,7 +11,7 @@ const USER_CONFIG_KEY = 'user_config';
 
 // ─── User Config ───
 const CONFIG_FIELDS = {
-  inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'],
+  inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'hr-exponent'],
   checkboxes: ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge']
 };
 
@@ -322,12 +322,50 @@ function hmsToHours(str) {
   return isNaN(s) ? 0 : s / 3600;
 }
 
-const SCORE_SCALE = 5;  // magnitude only: bring typical runs into ~0-100, no hard cap
+// Score = SCORE_SCALE × pace_équivalente × bonus_endurance / hrEffort^hrExp
+// Factors fixed at sensible defaults — variability added noise without information.
+const DPLUS_FACTOR = 100;       // 1 km D+ ≈ 10 km plat (rule of thumb traileur)
+const DIST_BONUS_FACTOR = 110;  // bonus endurance modéré (20km gagne +8% vs 2×10km)
+const SCORE_SCALE = 3.5;        // magnitude only: brings typical runs into ~0-100
 
-function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor, fallbackHrEffort) {
+// Prefer FC_mediane (from HR stream backfill) — robust to warm-up and drift.
+// Fall back to Moyenne_FC (summary endpoint) when stream not yet fetched.
+function preferredHr(d) {
+  const med = cleanNum(d.FC_mediane);
+  if (med > 0) return med;
+  return cleanNum(d.Moyenne_FC);
+}
+
+// "tried but no HR data" (sensor off, manual entry) is stored as FC_mediane=null;
+// "never tried" is the absence of the key entirely. Distinguish so the icon
+// reflects sync state, not data quality.
+function hrStreamState(d) {
+  if (!cleanNum(d.Moyenne_FC)) return 'none';        // no HR at all
+  if ('FC_mediane' in d) {
+    return cleanNum(d.FC_mediane) > 0 ? 'synced' : 'no-data';
+  }
+  return 'pending';
+}
+
+function renderHrCell(a) {
+  const mean = cleanNum(a.Moyenne_FC);
+  if (!mean) return '-';
+  const med = cleanNum(a.FC_mediane);
+  const shown = med > 0 ? Math.round(med) : Math.round(mean);
+  const state = hrStreamState(a);
+  const dot = {
+    synced:  '<span class="hr-dot synced" title="FC médiane (stream récupéré)"></span>',
+    pending: '<span class="hr-dot pending" title="FC stream pas encore récupéré — rafraîchis"></span>',
+    'no-data': '<span class="hr-dot no-data" title="Stream récupéré mais sans données HR utilisables"></span>',
+    none: ''
+  }[state];
+  return `${shown} bpm ${dot}`;
+}
+
+function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, hrExp, fallbackHrEffort) {
   if (hours <= 0) return 0;
-  const equivDist = dist + (elev / dplusFactor);
-  const enduranceBonus = 1 + (dist / distBonusFactor);
+  const equivDist = dist + (elev / DPLUS_FACTOR);
+  const enduranceBonus = 1 + (dist / DIST_BONUS_FACTOR);
   const equivSpeed = equivDist / hours;
   const hrReserve = fcMax - fcRepos;
   let hrEffort;
@@ -337,8 +375,7 @@ function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFac
   } else {
     hrEffort = fallbackHrEffort || 0.65;
   }
-  // sqrt(hrEffort): pénalité HR concave — colle au plateau HR/pace (bas HR moins boosté, haut HR moins puni)
-  const score = SCORE_SCALE * (equivSpeed * enduranceBonus) / Math.sqrt(hrEffort);
+  const score = SCORE_SCALE * (equivSpeed * enduranceBonus) / Math.pow(hrEffort, hrExp);
   return isFinite(score) ? score : 0;
 }
 
@@ -347,7 +384,7 @@ function computeFallbackHrEffort(activities, fcMax, fcRepos) {
   if (hrReserve <= 0) return 0.65;
   const efforts = [];
   activities.forEach(d => {
-    const hr = cleanNum(d.Moyenne_FC);
+    const hr = preferredHr(d);
     if (hr > 0) {
       const e = (hr - fcRepos) / hrReserve;
       if (e > 0.05) efforts.push(e);
@@ -359,177 +396,8 @@ function computeFallbackHrEffort(activities, fcMax, fcRepos) {
 
 let lastFilteredActivities = [];
 
-// ─── Calibration helpers ───
-function getFilteredActivitiesForCalibration() {
-  const minVal = document.getElementById('date-min').value;
-  const maxVal = document.getElementById('date-max').value;
-  const distMin = parseFloat(document.getElementById('dist-min').value) || 0;
-  const distMaxVal = document.getElementById('dist-max').value;
-  const distMax = distMaxVal ? parseFloat(distMaxVal) : Infinity;
-  const elevMin = parseFloat(document.getElementById('elev-min').value) || 0;
-  const elevMaxVal = document.getElementById('elev-max').value;
-  const elevMax = elevMaxVal ? parseFloat(elevMaxVal) : Infinity;
-
-  return rawData.filter(d => {
-    const isTypeMatch = [...document.querySelectorAll('#sport-selector .type-pill.active')].map(p => p.textContent).includes(d.Type);
-    const activityDate = (d.Date || '').split('T')[0];
-    const dist = cleanNum(d.Distance_km);
-    const elev = cleanNum(d.D_plus);
-    const hours = hmsToHours(d.Duree);
-    const hr = cleanNum(d.Moyenne_FC);
-    return isTypeMatch && activityDate >= minVal && activityDate <= maxVal
-      && dist >= distMin && dist <= distMax && elev >= elevMin && elev <= elevMax
-      && hours > 0 && !d.Excluded && hr > 0;
-  });
-}
-
-function avgPerfForSplit(activities, splitKey, median, dplusFactor, distBonusFactor) {
-  const fcMax = parseInt(document.getElementById('fc-max').value) || 180;
-  const fcRepos = parseInt(document.getElementById('fc-repos').value) || 60;
-  const below = [], above = [];
-  activities.forEach(d => {
-    const val = cleanNum(d[splitKey]);
-    const dist = cleanNum(d.Distance_km);
-    const elev = cleanNum(d.D_plus);
-    const hours = hmsToHours(d.Duree);
-    const hr = cleanNum(d.Moyenne_FC);
-    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor);
-    if (score <= 0) return;
-    if (val <= median) below.push(score); else above.push(score);
-  });
-  const avgBelow = below.length > 0 ? below.reduce((a, b) => a + b, 0) / below.length : 0;
-  const avgAbove = above.length > 0 ? above.reduce((a, b) => a + b, 0) / above.length : 0;
-  return { avgBelow, avgAbove };
-}
-
-function computeMedian(values) {
-  if (values.length === 0) return 0;
-  values.sort((a, b) => a - b);
-  const mid = Math.floor(values.length / 2);
-  return values.length % 2 === 0 ? (values[mid - 1] + values[mid]) / 2 : values[mid];
-}
-
-function updateCalibrationIndicators() {
-  const activities = getFilteredActivitiesForCalibration();
-  const dplusFactor = parseInt(document.getElementById('dplus-factor').value) || 185;
-  const distBonusFactor = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
-
-  const elevValues = activities.map(d => cleanNum(d.D_plus));
-  const distValues = activities.map(d => cleanNum(d.Distance_km));
-  const medianElev = computeMedian([...elevValues]);
-  const medianDist = computeMedian([...distValues]);
-
-  const elevSplit = avgPerfForSplit(activities, 'D_plus', medianElev, dplusFactor, distBonusFactor);
-  const distSplit = avgPerfForSplit(activities, 'Distance_km', medianDist, dplusFactor, distBonusFactor);
-
-  function renderIndicator(prefix, split) {
-    document.getElementById(`perf-below-${prefix}`).textContent = split.avgBelow > 0 ? split.avgBelow.toFixed(2) : '-';
-    document.getElementById(`perf-above-${prefix}`).textContent = split.avgAbove > 0 ? split.avgAbove.toFixed(2) : '-';
-    const deltaEl = document.getElementById(`delta-${prefix}`);
-    if (split.avgBelow > 0 && split.avgAbove > 0) {
-      const pct = Math.abs(split.avgAbove - split.avgBelow) / ((split.avgAbove + split.avgBelow) / 2) * 100;
-      deltaEl.textContent = pct < 1 ? 'OK' : `${pct.toFixed(0)}%`;
-      deltaEl.className = `factor-delta ${pct < 5 ? 'balanced' : 'unbalanced'}`;
-    } else {
-      deltaEl.textContent = '';
-      deltaEl.className = 'factor-delta';
-    }
-  }
-
-  renderIndicator('elev', elevSplit);
-  renderIndicator('dist', distSplit);
-}
-
-function autoCalibrate() {
-  const activities = getFilteredActivitiesForCalibration();
-  const warnElev = document.getElementById('warning-elev');
-  const warnDist = document.getElementById('warning-dist');
-  if (activities.length < 4) {
-    const msg = activities.length === 0 && rawData.some(d => cleanNum(d.Moyenne_FC) === 0)
-      ? 'Calibrage impossible : pas assez d\'activités avec FC enregistrée. Les valeurs par défaut restent adaptées.'
-      : 'Pas assez d\'activités pour calibrer (minimum 4).';
-    warnElev.textContent = msg; warnElev.style.display = 'block';
-    warnDist.textContent = msg; warnDist.style.display = 'block';
-    return;
-  }
-
-  const elevValues = activities.map(d => cleanNum(d.D_plus));
-  const distValues = activities.map(d => cleanNum(d.Distance_km));
-  const medianElev = computeMedian([...elevValues]);
-  const medianDist = computeMedian([...distValues]);
-
-  const MIN_BOUND = 50, MAX_BOUND = 500;
-  let bestDplus = parseInt(document.getElementById('dplus-factor').value) || 185;
-  let bestDist = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
-  let rawDplus, rawDist;
-
-  // Alternate passes to converge both factors
-  for (let pass = 0; pass < 3; pass++) {
-    // Calibrate D+ factor
-    let lo = MIN_BOUND, hi = MAX_BOUND;
-    for (let i = 0; i < 30; i++) {
-      const mid = (lo + hi) / 2;
-      const { avgBelow, avgAbove } = avgPerfForSplit(activities, 'D_plus', medianElev, mid, bestDist);
-      if (avgBelow === 0 || avgAbove === 0) break;
-      if (avgAbove < avgBelow) hi = mid; else lo = mid;
-      if (Math.abs(hi - lo) < 1) break;
-    }
-    rawDplus = Math.round((lo + hi) / 2);
-    bestDplus = rawDplus;
-
-    // Calibrate dist factor
-    lo = MIN_BOUND; hi = MAX_BOUND;
-    for (let i = 0; i < 30; i++) {
-      const mid = (lo + hi) / 2;
-      const { avgBelow, avgAbove } = avgPerfForSplit(activities, 'Distance_km', medianDist, bestDplus, mid);
-      if (avgBelow === 0 || avgAbove === 0) break;
-      if (avgAbove < avgBelow) hi = mid; else lo = mid;
-      if (Math.abs(hi - lo) < 1) break;
-    }
-    rawDist = Math.round((lo + hi) / 2);
-    bestDist = rawDist;
-  }
-
-  const BALANCED_PCT = 5;
-  const HIT_LO = MIN_BOUND + 2;
-  const HIT_HI = MAX_BOUND - 2;
-  const deviationOf = split => (split.avgBelow > 0 && split.avgAbove > 0)
-    ? Math.abs(split.avgAbove - split.avgBelow) / ((split.avgAbove + split.avgBelow) / 2) * 100
-    : Infinity;
-
-  // Pour chaque facteur: applique si la dichotomie converge dans les bornes;
-  // sinon garde la valeur courante. Warning seulement si bornes touchées ET
-  // déséquilibre > 5% (sinon les données sont déjà équilibrées avec la valeur actuelle).
-  const applyOrWarn = (rawX, currentX, otherX, splitKey, median, inputId, warnEl) => {
-    const hitBound = rawX <= HIT_LO || rawX >= HIT_HI;
-    if (!hitBound) {
-      document.getElementById(inputId).value = rawX;
-      warnEl.style.display = 'none';
-      return;
-    }
-    const dev = deviationOf(avgPerfForSplit(activities, splitKey, median, currentX, otherX));
-    if (dev > BALANCED_PCT) {
-      warnEl.textContent = `Données déséquilibrées (Δ=${dev.toFixed(0)}%) — calibrage hors bornes, valeur conservée.`;
-      warnEl.style.display = 'block';
-    } else {
-      warnEl.style.display = 'none';
-    }
-  };
-
-  const currentDplus = parseInt(document.getElementById('dplus-factor').value) || 185;
-  const currentDist = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
-  applyOrWarn(rawDplus, currentDplus, currentDist, 'D_plus', medianElev, 'dplus-factor', warnElev);
-  // Re-read after potential update so the dist deviation uses the just-applied D+ if any
-  const dplusForDist = parseInt(document.getElementById('dplus-factor').value) || currentDplus;
-  applyOrWarn(rawDist, currentDist, dplusForDist, 'Distance_km', medianDist, 'dist-bonus-factor', warnDist);
-
-  updateCalibrationIndicators();
-  updateDashboard();
-}
-
 function openPersoModal() {
   document.getElementById('perso-modal').classList.add('active');
-  updateCalibrationIndicators();
 }
 
 function closePersoModal() {
@@ -796,6 +664,7 @@ function renderActivitiesTable() {
     const dateStr = date.isValid ? date.toFormat('dd/MM/yyyy HH:mm') : a.Date;
     const score = a.score ? a.score.toFixed(1) : '-';
     const excluded = a.Excluded;
+    const hrDisplay = renderHrCell(a);
     return `<tr class="${excluded ? 'excluded' : ''}">
       <td>${dateStr}</td>
       <td><a href="${a.Lien_activite}" target="_blank">${a.Nom}</a></td>
@@ -803,7 +672,7 @@ function renderActivitiesTable() {
       <td>${cleanNum(a.Distance_km).toFixed(1)} km</td>
       <td>${a.Duree}</td>
       <td>${cleanNum(a.D_plus)} m</td>
-      <td>${cleanNum(a.Moyenne_FC) ? Math.round(cleanNum(a.Moyenne_FC)) + ' bpm' : '-'}</td>
+      <td>${hrDisplay}</td>
       <td>${score}</td>
       <td>${a.charge ? a.charge.toFixed(1) : '-'}</td>
       <td><button class="btn-exclude ${excluded ? 'is-excluded' : ''}" data-id="${a.ID}" data-excluded="${excluded ? '1' : '0'}">${excluded ? 'Inclure' : 'Exclure'}</button></td>
@@ -869,15 +738,14 @@ function updateDashboard() {
 
   const fcMax = parseInt(document.getElementById('fc-max').value) || 180;
   const fcRepos = parseInt(document.getElementById('fc-repos').value) || 60;
-  const dplusFactor = parseInt(document.getElementById('dplus-factor').value) || 185;
-  const distBonusFactor = parseInt(document.getElementById('dist-bonus-factor').value) || 110;
+  const hrExp = parseFloat(document.getElementById('hr-exponent').value) || 1.0;
   const fallbackHrEffort = computeFallbackHrEffort(filtered, fcMax, fcRepos);
 
   filtered.forEach(d => {
     const dist = cleanNum(d.Distance_km);
     const elev = cleanNum(d.D_plus);
     const hours = hmsToHours(d.Duree);
-    const hr = cleanNum(d.Moyenne_FC);
+    const hr = preferredHr(d);
     const excluded = d.Excluded;
     if (hours === 0) return;
 
@@ -890,7 +758,7 @@ function updateDashboard() {
     }
 
     // Always count for totals
-    const equivDist = dist + (elev / dplusFactor);
+    const equivDist = dist + (elev / DPLUS_FACTOR);
     const charge = equivDist;
 
     groupedData[key].dist += dist;
@@ -908,7 +776,7 @@ function updateDashboard() {
 
     // Only count for score if not excluded
     if (!excluded) {
-      const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor, fallbackHrEffort);
+      const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, hrExp, fallbackHrEffort);
       groupedData[key].perfSum += score;
       groupedData[key].perfCount += 1;
       totalPerfScore += score;
@@ -961,9 +829,9 @@ function updateDashboard() {
     const dist = cleanNum(d.Distance_km);
     const elev = cleanNum(d.D_plus);
     const hours = hmsToHours(d.Duree);
-    const hr = cleanNum(d.Moyenne_FC);
-    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, dplusFactor, distBonusFactor, fallbackHrEffort);
-    const charge = dist + elev / dplusFactor;
+    const hr = preferredHr(d);
+    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, hrExp, fallbackHrEffort);
+    const charge = dist + elev / DPLUS_FACTOR;
     return { ...d, score, charge };
   });
   activitiesPage = 1;
@@ -1250,12 +1118,8 @@ document.getElementById('btn-close-perso').addEventListener('click', closePersoM
 document.getElementById('perso-modal').addEventListener('click', (e) => {
   if (e.target === document.getElementById('perso-modal')) closePersoModal();
 });
-document.getElementById('btn-auto-calibrate').addEventListener('click', autoCalibrate);
-['fc-repos', 'fc-max', 'dplus-factor', 'dist-bonus-factor'].forEach(id => {
-  document.getElementById(id).addEventListener('change', () => {
-    updateCalibrationIndicators();
-    updateDashboard();
-  });
+['fc-repos', 'fc-max', 'hr-exponent'].forEach(id => {
+  document.getElementById(id).addEventListener('change', updateDashboard);
 });
 
 // Settings modal
@@ -1300,7 +1164,7 @@ document.getElementById('btn-disconnect-strava').addEventListener('click', async
 });
 
 // Data management
-const EXPORT_COLUMNS = ['ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC', 'Map_polyline', 'Excluded'];
+const EXPORT_COLUMNS = ['ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC', 'FC_mediane', 'FC_p25', 'FC_p75', 'Map_polyline', 'Excluded'];
 
 function csvEscape(value) {
   if (value === null || value === undefined) return '';
@@ -1341,7 +1205,15 @@ document.getElementById('btn-import-csv').addEventListener('change', async (e) =
     const r = rows[i];
     const id = r[idx('ID')];
     if (!id) continue;
-    activities.push({
+    const optionalNum = name => {
+      const col = idx(name);
+      if (col < 0) return undefined;
+      const v = r[col];
+      if (v === '' || v === undefined) return undefined;
+      const n = parseFloat(v);
+      return isNaN(n) ? undefined : n;
+    };
+    const a = {
       ID: id,
       Nom: r[idx('Nom')] || '',
       Type: r[idx('Type')] || '',
@@ -1353,7 +1225,14 @@ document.getElementById('btn-import-csv').addEventListener('change', async (e) =
       Moyenne_FC: r[idx('Moyenne_FC')] || '',
       Map_polyline: idx('Map_polyline') >= 0 ? (r[idx('Map_polyline')] || null) : null,
       Excluded: (r[idx('Excluded')] || '') === 'TRUE'
-    });
+    };
+    const fcMed = optionalNum('FC_mediane');
+    if (fcMed !== undefined) a.FC_mediane = fcMed;
+    const fcP25 = optionalNum('FC_p25');
+    if (fcP25 !== undefined) a.FC_p25 = fcP25;
+    const fcP75 = optionalNum('FC_p75');
+    if (fcP75 !== undefined) a.FC_p75 = fcP75;
+    activities.push(a);
   }
   if (activities.length === 0) { alert('Aucune activité trouvée dans le fichier'); e.target.value = ''; return; }
   if (!confirm(`Importer ${activities.length} activités ? Cela remplacera les données actuelles.`)) { e.target.value = ''; return; }
@@ -1491,6 +1370,7 @@ document.getElementById('btn-clear-data').addEventListener('click', async () => 
   updateDashboard();
   updateTopBar();
 });
+
 
 // ─── Init ───
 async function maybeShowMigrationBanner() {

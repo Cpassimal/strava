@@ -217,6 +217,91 @@ export async function backfillPolylines(existingActivities, onProgress = null) {
   return { activities: existingActivities, filled };
 }
 
+/**
+ * Fetch the heartrate stream for a single activity and compute robust HR stats
+ * (median + percentiles). Returns null if no HR data (missing sensor, private activity).
+ * Throws { message: 'rate_limited', retryAfter } on 429 so callers can pace.
+ */
+export async function fetchHrStream(activityId, token) {
+  const url = `${STRAVA_API_BASE}/activities/${activityId}/streams?keys=heartrate&key_by_type=true`;
+  const response = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (response.status === 404) return null;
+  if (response.status === 429) {
+    const retryAfter = parseInt(response.headers.get('Retry-After')) || 900;
+    const err = new Error('rate_limited');
+    err.retryAfter = retryAfter;
+    throw err;
+  }
+  if (!response.ok) throw new Error(`Stream ${activityId}: HTTP ${response.status}`);
+
+  const data = await response.json();
+  const hr = data?.heartrate?.data;
+  if (!Array.isArray(hr) || hr.length === 0) return null;
+
+  const sorted = [...hr].filter(v => v > 0).sort((a, b) => a - b);
+  if (sorted.length === 0) return null;
+  const pct = p => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+  return {
+    FC_mediane: pct(0.50),
+    FC_p75: pct(0.75),
+    FC_p25: pct(0.25)
+  };
+}
+
+/**
+ * Backfill HR stats from streams for all activities that have a summary HR but
+ * no stream-derived stats yet. Persists progress every `saveEvery` activities so
+ * a long run survives interruption. Handles 429 by sleeping for Retry-After.
+ *
+ * Activities are mutated in place. Setting `FC_mediane = null` marks an activity
+ * as "tried but no HR data" so we don't retry it forever.
+ */
+export async function backfillHrStreams(activities, onProgress = null, saveProgress = null, saveEvery = 10) {
+  const target = activities.filter(a => !('FC_mediane' in a) && a.Moyenne_FC);
+  const totalNeeded = target.length;
+  if (totalNeeded === 0) return { activities, filled: 0, totalNeeded: 0 };
+
+  const token = await ensureValidToken();
+  let filled = 0;
+
+  for (let i = 0; i < target.length; i++) {
+    const a = target[i];
+    if (onProgress) onProgress({ filled, totalNeeded, current: i + 1 });
+
+    try {
+      const stats = await fetchHrStream(a.ID, token);
+      if (stats === null) {
+        a.FC_mediane = null; // tried, no data — don't retry
+      } else {
+        Object.assign(a, stats);
+      }
+      filled++;
+    } catch (e) {
+      if (e.message === 'rate_limited') {
+        const waitSec = Math.max(60, e.retryAfter);
+        if (onProgress) onProgress({ filled, totalNeeded, current: i + 1, waiting: waitSec });
+        if (saveProgress) await saveProgress(activities); // persist before sleep
+        await new Promise(r => setTimeout(r, waitSec * 1000 + 1000));
+        i--; // retry this activity
+        continue;
+      }
+      // Other error: mark as tried-failed to avoid hammering
+      console.warn(`HR stream fail for ${a.ID}:`, e.message);
+      a.FC_mediane = null;
+      filled++;
+    }
+
+    if (saveProgress && filled > 0 && filled % saveEvery === 0) {
+      await saveProgress(activities);
+    }
+  }
+
+  if (saveProgress) await saveProgress(activities);
+  return { activities, filled, totalNeeded };
+}
+
 export async function disconnectStrava() {
   await chrome.storage.local.remove([
     STORAGE_KEYS.STRAVA_ACCESS_TOKEN,

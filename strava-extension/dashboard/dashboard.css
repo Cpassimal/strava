@@ -255,6 +255,7 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
   max-width: 90vw;
   max-height: 90vh;
   overflow-y: auto;
+  overflow-x: hidden;
   box-shadow: 0 20px 60px rgba(0,0,0,0.2);
 }
 
@@ -365,58 +366,19 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
   color: #333;
 }
 
-.factor-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.8rem;
-}
-
-.factor-group-label {
-  color: #999;
-  font-size: 0.7rem;
-}
-
-.factor-value {
-  font-weight: 700;
-  color: #333;
-  font-size: 0.85rem;
-  min-width: 32px;
-  text-align: center;
-}
-
-.factor-vs {
-  color: #bbb;
-  font-size: 0.75rem;
-}
-
-.factor-delta {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
+/* Per-row HR stream sync indicator (tiny dot next to bpm in the activity table) */
+.hr-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
   margin-left: 4px;
+  cursor: help;
 }
-
-.factor-delta.balanced {
-  background: #e6f9ed;
-  color: #1a8a4a;
-}
-
-.factor-delta.unbalanced {
-  background: #fff3e0;
-  color: #c77800;
-}
-
-.factor-warning {
-  margin-top: 8px;
-  font-size: 0.75rem;
-  color: #996600;
-  background: #fff8e1;
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid #ffe082;
-}
+.hr-dot.synced { background: #1a8a4a; }
+.hr-dot.pending { background: #cccccc; }
+.hr-dot.no-data { background: #d97706; }
 
 /* Loading overlay */
 .loading-overlay {
@@ -494,9 +456,13 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
   padding: 6px 10px;
   border-radius: 6px;
   font-size: 0.75rem;
-  white-space: nowrap;
+  white-space: normal;
+  width: max-content;
+  max-width: 320px;
   z-index: 10;
   font-weight: 400;
+  line-height: 1.4;
+  pointer-events: none;
 }
 
 .has-tooltip:hover .tooltip { display: block; }

@@ -1,4 +1,4 @@
-import { authenticate, fetchActivities, backfillPolylines, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
+import { authenticate, fetchActivities, backfillPolylines, backfillHrStreams, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
 import { STORAGE_KEYS } from '../lib/config.js';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -123,9 +123,32 @@ async function refreshData() {
     }
   }
 
+  // Persist new activities + polyline backfill before the HR stream pass —
+  // streams take a long time on first run (~1h for 350 activities at the
+  // rate limit), so we save fast progress first.
   if (toAdd.length > 0 || backfilled > 0) {
     broadcastProgress('save', `Sauvegarde...`);
     await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities });
+  }
+
+  // Backfill HR streams for ALL activities still missing them — auto on every
+  // refresh, no separate button. backfillHrStreams persists every 10 fetches
+  // and handles 429 with sleep. Long first run, near-instant after that.
+  const missingHr = allActivities.filter(a => !('FC_mediane' in a) && a.Moyenne_FC).length;
+  if (missingHr > 0) {
+    broadcastProgress('hr-stream', `FC détaillée: 0/${missingHr}...`);
+    try {
+      await backfillHrStreams(allActivities,
+        ({ filled, totalNeeded, waiting }) => {
+          broadcastProgress('hr-stream', waiting
+            ? `Rate limit Strava — pause ${waiting}s (${filled}/${totalNeeded})...`
+            : `FC détaillée: ${filled}/${totalNeeded}...`);
+        },
+        async (acts) => { await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: acts }); }
+      );
+    } catch (e) {
+      console.warn('Backfill HR streams failed:', e);
+    }
   }
 
   const now = new Date().toISOString();

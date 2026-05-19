@@ -5,7 +5,8 @@ export const STRAVA_TOKEN_URL = 'https://www.strava.com/oauth/token';
 export const ACTIVITY_TYPES = ['Run', 'TrailRun', 'Ride'];
 
 export const CSV_HEADERS = [
-  'ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite', 'Moyenne_FC', 'Excluded'
+  'ID', 'Nom', 'Type', 'Date', 'Distance_km', 'Duree', 'D_plus', 'Lien_activite',
+  'Moyenne_FC', 'FC_mediane', 'FC_p25', 'FC_p75', 'Excluded'
 ];
 
 export const STORAGE_KEYS = {
