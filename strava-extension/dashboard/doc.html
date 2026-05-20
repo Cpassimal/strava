@@ -112,46 +112,54 @@
       <tr><td>Act. / période</td><td>Activités / nombre de périodes</td><td>Dépend de la fenêtre choisie</td></tr>
       <tr><td>Perf. Moy</td><td>Moyenne des scores de performance</td><td>Exclut les activités marquées exclues</td></tr>
       <tr><td>Charge Moy</td><td>Moyenne des charges par activité</td><td></td></tr>
-      <tr><td>Dist. Médiane</td><td>Médiane des distances</td><td>Utile pour le calibrage</td></tr>
-      <tr><td>D+ Médian</td><td>Médiane des D+</td><td>Utile pour le calibrage</td></tr>
+      <tr><td>Dist. Médiane</td><td>Médiane des distances</td><td>Repère de profil</td></tr>
+      <tr><td>D+ Médian</td><td>Médiane des D+</td><td>Repère de profil</td></tr>
     </tbody>
   </table>
 
   <!-- ─── Performance ─── -->
   <h2>Score de performance</h2>
 
-  <p>Le score de performance évalue chaque activité en combinant vitesse, dénivelé, distance et (si disponible) effort cardiaque.</p>
+  <p>Le score évalue chaque activité en combinant vitesse, dénivelé, distance et effort cardiaque. Les facteurs de conversion sont <strong>figés</strong> à des valeurs standards traileur ; seul l'exposant HR est ajustable manuellement.</p>
 
   <div class="formula">
-    <span class="label">Perf</span> = (vitesse_equiv × bonus_endurance) / effort_cardiaque<br><br>
-    <span class="label">vitesse_equiv</span> = (distance + D+ / facteur_D+) / heures<br>
-    <span class="label">bonus_endurance</span> = 1 + distance / facteur_dist<br>
-    <span class="label">effort_cardiaque</span> = (FC_moy - FC_repos) / (FC_max - FC_repos)
+    <span class="label">Perf</span> = 3.5 × (vitesse_equiv × bonus_endurance) / hrEffort<sup>expHR</sup><br><br>
+    <span class="label">vitesse_equiv</span> = (distance + D+ / 100) / heures<br>
+    <span class="label">bonus_endurance</span> = 1 + distance / 110<br>
+    <span class="label">hrEffort</span> = (FC_mediane - FC_repos) / (FC_max - FC_repos)<br>
+    <span class="comment">expHR : exposant manuel (défaut 1.0)</span>
   </div>
 
   <h3>Composantes</h3>
   <ul>
-    <li><strong>Vitesse équivalente</strong> — Intègre le D+ en le convertissant en kilomètres équivalents via le facteur D+. Une sortie de 10km avec 500m de D+ et un facteur de 100 donne une distance équivalente de 15km.</li>
-    <li><strong>Bonus endurance</strong> — Récompense progressivement les sorties longues. Le facteur distance contrôle l'amplitude : plus il est élevé, moins le bonus est marqué.</li>
-    <li><strong>Effort cardiaque</strong> — Normalise le score par l'intensité. Courir vite avec une FC basse donne un meilleur score que la même vitesse avec une FC élevée. Utilise la réserve cardiaque (méthode Karvonen).</li>
+    <li><strong>Vitesse équivalente</strong> — D+ converti en kilomètres équivalents avec le facteur 100 (règle de pouce traileur : 1 km de D+ ≈ 10 km plat). Une sortie de 10 km avec 500 m de D+ équivaut à 15 km plat.</li>
+    <li><strong>Bonus endurance</strong> — Récompense modérément les sorties longues. Avec un facteur 110 : un 20 km score ~8% de plus par km qu'un 10 km, soit ~8% de plus qu'un 2×10 km cumulé.</li>
+    <li><strong>hrEffort</strong> — Fraction de la réserve cardiaque utilisée (méthode Karvonen). Utilise la <strong>FC médiane</strong> du stream HR (robuste au warm-up et au drift cardiaque), avec fallback sur la FC moyenne si le stream n'est pas encore récupéré.</li>
+    <li><strong>Exposant HR (expHR)</strong> — Contrôle combien une FC basse fait grimper le score à pace égale. À pace identique entre une sortie à 150 bpm et une à 180 bpm : <code>expHR=0.5</code> donne +13% à la FC basse, <code>1.0</code> donne +28%, <code>1.5</code> donne +43%.</li>
   </ul>
 
-  <h3>Gestion de l'absence de FC</h3>
-  <p>Toutes les montres n'enregistrent pas la fréquence cardiaque. Le dashboard gère 3 cas :</p>
+  <h3>FC médiane (stream HR)</h3>
+  <p>La FC moyenne du résumé Strava est biaisée : un warm-up en EF la tire vers le bas sur les sorties courtes, le drift cardiaque (déshydratation, fatigue) la tire vers le haut sur les longues. Le dashboard récupère le <strong>stream HR seconde par seconde</strong> via l'API Strava et calcule la médiane — robuste aux deux biais.</p>
 
   <div class="card">
-    <p><span class="tag tag-green">Cas 1</span> <strong>L'activité a une FC</strong> — Formule complète, effort cardiaque réel.</p>
-    <p><span class="tag tag-orange">Cas 2</span> <strong>Pas de FC, mais d'autres activités filtrées en ont</strong> — L'effort cardiaque est remplacé par la moyenne des efforts cardiaques des activités avec FC. Cela revient à dire "cette sortie a été faite à mon intensité habituelle".</p>
-    <p><span class="tag tag-blue">Cas 3</span> <strong>Aucune activité n'a de FC</strong> — L'effort cardiaque est fixé à 0.65 (65% de la réserve cardiaque), correspondant à un effort d'endurance fondamentale typique.</p>
+    <p><strong>Récupération automatique au refresh</strong> — Un appel API par activité. Rate limit Strava (95 req / 15 min) géré automatiquement avec pause sur 429. La première synchro prend ~1h pour 350 activités ; ensuite c'est instantané (seules les nouvelles activités sont fetched).</p>
+    <p><strong>Indicateur par ligne</strong> — Un petit point coloré apparaît à côté de la FC dans le tableau d'activités : <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#1a8a4a;vertical-align:middle;"></span> vert = stream synchronisé (FC médiane), <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#ccc;vertical-align:middle;"></span> gris = en attente, <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#d97706;vertical-align:middle;"></span> orange = stream récupéré mais sans données HR (capteur off, saisie manuelle).</p>
   </div>
 
-  <p>Les scores des cas 2 et 3 sont comparables aux scores du cas 1 car ils utilisent la même échelle. La transition est progressive si le user s'équipe d'un cardio par la suite.</p>
+  <h3>Gestion de l'absence de FC</h3>
+  <p>Toutes les montres n'enregistrent pas la FC. Le dashboard gère 3 cas :</p>
+
+  <div class="card">
+    <p><span class="tag tag-green">Cas 1</span> <strong>FC médiane disponible (stream)</strong> — Score complet, le plus fiable.</p>
+    <p><span class="tag tag-blue">Cas 2</span> <strong>FC moyenne uniquement (stream pas encore récupéré)</strong> — Fallback sur la FC moyenne du résumé Strava. Score quasi identique pour la plupart des sorties.</p>
+    <p><span class="tag tag-orange">Cas 3</span> <strong>Aucune FC</strong> — hrEffort = moyenne des hrEffort des autres activités filtrées (intensité habituelle), ou 0.65 par défaut si aucune n'a de FC.</p>
+  </div>
 
   <!-- ─── Charge ─── -->
   <h2>Charge</h2>
 
   <div class="formula">
-    <span class="label">Charge</span> = distance + D+ / facteur_D+
+    <span class="label">Charge</span> = distance + D+ / 100
   </div>
 
   <p>La charge est la distance équivalente intégrant le dénivelé. C'est une mesure de volume mécanique indépendante de la FC. Sur les graphiques, elle est sommée par période (semaine, mois, etc.).</p>
@@ -160,54 +168,19 @@
   <h2>Exclusion d'activités</h2>
 
   <p>Exclure une activité retire <strong>uniquement</strong> son score du KPI "Perf. Moy" et du graphique de performance. Tous les autres indicateurs (distance, D+, volume, charge, médiane, etc.) ne sont pas impactés.</p>
-  <p>Cas d'usage : exclure une sortie aberrante (montre buggée, activité non représentative) sans perdre sa contribution aux totaux de volume.</p>
+  <p>Cas d'usage : exclure une sortie aberrante (montre buggée, sous-perf identifiée) sans perdre sa contribution aux totaux de volume.</p>
 
-  <!-- ─── Facteurs ─── -->
-  <h2>Facteurs de scoring</h2>
+  <!-- ─── Pourquoi pas de calibrage ─── -->
+  <h2>Pourquoi les facteurs sont figés</h2>
 
-  <h3>Facteur D+</h3>
-  <p>Contrôle la conversion du D+ en kilomètres équivalents. <strong>Plus il est élevé, moins le D+ pèse</strong> dans le score.</p>
-  <ul>
-    <li>Un traileur puissant en montée aura un facteur D+ plus élevé (le D+ le pénalise moins).</li>
-    <li>Un runner de plat aura un facteur plus bas.</li>
-    <li>Valeur par défaut : 185.</li>
-  </ul>
+  <p>Une version précédente proposait un auto-calibrage des facteurs D+, distance et hrExp par dichotomie sur des fenêtres glissantes (objectif : corrélation Spearman ≈ 0 entre chaque variable et le score). Après analyse empirique sur ~300 activités, cette approche a été <strong>retirée</strong> pour deux raisons :</p>
 
-  <h3>Facteur distance</h3>
-  <p>Contrôle le bonus accordé aux sorties longues. <strong>Plus il est élevé, moins les longues distances sont récompensées.</strong></p>
-  <ul>
-    <li>Valeur par défaut : 110.</li>
-  </ul>
-
-  <!-- ─── Calibrage ─── -->
-  <h2>Auto-calibrage</h2>
-
-  <h3>Principe</h3>
-  <p>L'objectif est de trouver les facteurs pour lesquels le score de performance est <strong>neutre</strong> vis-à-vis du profil de sortie. Une sortie courte/plate ne doit pas systématiquement scorer mieux (ou moins bien) qu'une longue/vallonnée.</p>
-
-  <h3>Méthode</h3>
-  <p>Pour chaque facteur, les activités sont séparées en deux groupes par la médiane (D+ médian pour le facteur D+, distance médiane pour le facteur distance). L'algorithme cherche par <strong>dichotomie</strong> la valeur du facteur qui égalise la performance moyenne des deux groupes.</p>
-
-  <div class="formula">
-    <span class="comment">Objectif :</span><br>
-    perf_moyenne(activités ≤ médiane) = perf_moyenne(activités > médiane)
-  </div>
-
-  <p>Les deux facteurs étant légèrement couplés (le facteur D+ affecte aussi le split par distance), l'algorithme fait <strong>3 passes alternées</strong> pour converger.</p>
-
-  <h3>Indicateurs visuels</h3>
-  <p>La modale "Paramètres perso" affiche pour chaque facteur :</p>
-  <ul>
-    <li>La perf moyenne du groupe sous la médiane et au-dessus.</li>
-    <li>Un badge : <span class="tag tag-green">OK</span> si l'écart est &lt; 5%, <span class="tag tag-orange">X%</span> sinon.</li>
-  </ul>
-
-  <h3>Limites</h3>
   <div class="card">
-    <p><strong>Données homogènes</strong> — Si les activités sont très similaires sur un axe (ex: toujours ~50m de D+), la dichotomie ne peut pas converger et tape dans les bornes (50 ou 500). Dans ce cas, le facteur n'est pas modifié et un avertissement s'affiche. Les valeurs par défaut restent appropriées car le facteur a de toute façon peu d'impact quand les données sont homogènes.</p>
-    <p><strong>Absence de FC</strong> — Le calibrage ne fonctionne qu'avec les activités ayant une FC enregistrée (minimum 4 requises). Sans FC, les valeurs par défaut sont conservées.</p>
-    <p><strong>Biais d'intensité</strong> — Le calibrage suppose un effort cardiaque comparable entre les deux groupes. Si les sorties courtes sont systématiquement faites à haute intensité et les longues en endurance, l'équilibrage compense aussi cette différence d'engagement.</p>
+    <p><strong>Facteurs couplés</strong> — Bouger hrExp de 0.75 à 0.60 fait passer le facteur D+ calibré de 129 à 145, sans qu'aucune réalité physique ne change. Les trois paramètres compensent les uns les autres et la calibration trouve souvent des minima locaux dégénérés (ex: facteur dist = 458 = bonus endurance désactivé).</p>
+    <p><strong>Pas de "vraie" valeur</strong> — Sur les 300 activités analysées, l'optimum population (r → 0) demande <code>hrExp ≈ 0.65</code>, mais l'intuition de paire (deux sorties à forme égale doivent scorer pareil) demande <code>hrExp ≈ 1.3</code>. Ce conflit ne se résout pas avec plus de calibration — c'est un choix de philosophie. Pareil pour les autres facteurs.</p>
   </div>
+
+  <p>Conclusion : valeurs traileur standard (D+ = 100, dist = 110) figées, exposant HR manuel. La FC médiane (stream) supprime le biais le plus important (warm-up / drift), ce qui rend le choix de l'exposant peu critique en pratique.</p>
 
   <!-- ─── Filtres ─── -->
   <h2>Filtres</h2>
