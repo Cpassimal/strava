@@ -126,33 +126,46 @@
     <span class="label">Perf</span> = 3.5 × (vitesse_equiv × bonus_endurance) / hrEffort<sup>expHR</sup><br><br>
     <span class="label">vitesse_equiv</span> = (distance + D+ / 100) / heures<br>
     <span class="label">bonus_endurance</span> = 1 + distance / 110<br>
-    <span class="label">hrEffort</span> = (FC_mediane - FC_repos) / (FC_max - FC_repos)<br>
+    <span class="label">FC_trimean</span> = (FC_P25 + 2 × FC_médiane + FC_P75) / 4<br>
+    <span class="label">hrEffort</span> = (FC_trimean - FC_repos) / (FC_max - FC_repos)<br>
     <span class="comment">expHR : exposant manuel (défaut 1.0)</span>
   </div>
+
+  <p><strong>Philosophie</strong> — Le score est un <strong>proxy de forme</strong> (équivalent VO2max), pas un score de difficulté. Vitesse haute pour une FC basse = bon score. Une 1h d'EF plate, une sortie longue avec D+ et un fractionné doivent scorer dans la même gamme à forme égale (la part purement anaérobique reste sous-représentée, par construction).</p>
 
   <h3>Composantes</h3>
   <ul>
     <li><strong>Vitesse équivalente</strong> — D+ converti en kilomètres équivalents avec le facteur 100 (règle de pouce traileur : 1 km de D+ ≈ 10 km plat). Une sortie de 10 km avec 500 m de D+ équivaut à 15 km plat.</li>
     <li><strong>Bonus endurance</strong> — Récompense modérément les sorties longues. Avec un facteur 110 : un 20 km score ~8% de plus par km qu'un 10 km, soit ~8% de plus qu'un 2×10 km cumulé.</li>
-    <li><strong>hrEffort</strong> — Fraction de la réserve cardiaque utilisée (méthode Karvonen). Utilise la <strong>FC médiane</strong> du stream HR (robuste au warm-up et au drift cardiaque), avec fallback sur la FC moyenne si le stream n'est pas encore récupéré.</li>
+    <li><strong>hrEffort</strong> — Fraction de la réserve cardiaque utilisée (méthode Karvonen), calculée à partir du <strong>trimean</strong> de la distribution FC du stream HR. Le trimean <code>(P25 + 2·médiane + P75) / 4</code> est un estimateur robuste qui exploite la distribution (3 points) au lieu de la seule médiane. Fallback sur la FC moyenne Strava si le stream n'est pas encore récupéré.</li>
     <li><strong>Exposant HR (expHR)</strong> — Contrôle combien une FC basse fait grimper le score à pace égale. À pace identique entre une sortie à 150 bpm et une à 180 bpm : <code>expHR=0.5</code> donne +13% à la FC basse, <code>1.0</code> donne +28%, <code>1.5</code> donne +43%.</li>
   </ul>
 
-  <h3>FC médiane (stream HR)</h3>
-  <p>La FC moyenne du résumé Strava est biaisée : un warm-up en EF la tire vers le bas sur les sorties courtes, le drift cardiaque (déshydratation, fatigue) la tire vers le haut sur les longues. Le dashboard récupère le <strong>stream HR seconde par seconde</strong> via l'API Strava et calcule la médiane — robuste aux deux biais.</p>
+  <h3>Pourquoi le trimean</h3>
+  <p>La FC moyenne du résumé Strava est biaisée par la manière dont l'activité a été enregistrée : pauses comptées ou pas, marches, dropouts capteur. La médiane seule, à l'inverse, ignore complètement la forme de la distribution — deux sorties avec même médiane mais P75 différents auraient le même score, alors qu'une est plus dure que l'autre.</p>
+  <p>Le <strong>trimean</strong> <code>(P25 + 2·médiane + P75) / 4</code> est un estimateur statistique connu qui combine robustesse (poids dominant sur la médiane) et information de spread (les quartiles contribuent). En pratique :</p>
+  <ul>
+    <li><strong>EF stable</strong> — P25, médiane et P75 sont proches → trimean ≈ médiane → score honnête.</li>
+    <li><strong>Sortie longue avec relief</strong> — Warm-up doux (P25 bas) tire modérément vers le bas, montées dures (P75 haut) tirent vers le haut. Net : reflète la FC effective de l'effort, pas biaisée par les arrêts ravito.</li>
+    <li><strong>Fractionné</strong> — P25 bas (récup), P75 haut (intervals) s'équilibrent. La part anaérobique reste sous-représentée (limite acceptée).</li>
+  </ul>
+  <p>Le dashboard récupère le <strong>stream HR seconde par seconde</strong> via l'API Strava pour calculer P25, médiane et P75.</p>
+
+  <h3>Affichage vs calcul</h3>
+  <p>Dans le tableau d'activités, la <strong>FC affichée est la moyenne Strava</strong> (iso UI Strava — évite la confusion "pourquoi le chiffre est différent"). Le <strong>score interne</strong> utilise le trimean du stream. La pastille colorée à côté de la FC indique l'état de synchro du stream :</p>
 
   <div class="card">
+    <p><strong>Indicateurs par ligne</strong> — <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#1a8a4a;vertical-align:middle;"></span> vert = distribution FC dispo (score utilise le trimean), <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#ccc;vertical-align:middle;"></span> gris = stream pas encore récupéré (score utilise la moyenne Strava — rafraîchis pour score plus précis), <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#d97706;vertical-align:middle;"></span> orange = stream récupéré mais sans données HR (capteur off, saisie manuelle).</p>
     <p><strong>Récupération automatique au refresh</strong> — Un appel API par activité. Rate limit Strava (95 req / 15 min) géré automatiquement avec pause sur 429. La première synchro prend ~1h pour 350 activités ; ensuite c'est instantané (seules les nouvelles activités sont fetched).</p>
-    <p><strong>Indicateur par ligne</strong> — Un petit point coloré apparaît à côté de la FC dans le tableau d'activités : <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#1a8a4a;vertical-align:middle;"></span> vert = stream synchronisé (FC médiane), <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#ccc;vertical-align:middle;"></span> gris = en attente, <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#d97706;vertical-align:middle;"></span> orange = stream récupéré mais sans données HR (capteur off, saisie manuelle).</p>
   </div>
 
   <h3>Gestion de l'absence de FC</h3>
   <p>Toutes les montres n'enregistrent pas la FC. Le dashboard gère 3 cas :</p>
 
   <div class="card">
-    <p><span class="tag tag-green">Cas 1</span> <strong>FC médiane disponible (stream)</strong> — Score complet, le plus fiable.</p>
+    <p><span class="tag tag-green">Cas 1</span> <strong>Distribution FC dispo (stream synchronisé)</strong> — Score complet via trimean, le plus fiable.</p>
     <p><span class="tag tag-blue">Cas 2</span> <strong>FC moyenne uniquement (stream pas encore récupéré)</strong> — Fallback sur la FC moyenne du résumé Strava. Score quasi identique pour la plupart des sorties.</p>
-    <p><span class="tag tag-orange">Cas 3</span> <strong>Aucune FC</strong> — hrEffort = moyenne des hrEffort des autres activités filtrées (intensité habituelle), ou 0.65 par défaut si aucune n'a de FC.</p>
+    <p><span class="tag tag-orange">Cas 3</span> <strong>Aucune FC du tout (pas de montre HR)</strong> — hrEffort = moyenne des hrEffort des autres activités filtrées (intensité habituelle), ou 0.65 par défaut si aucune n'a de FC. Pas de bug, juste score moins différencié.</p>
   </div>
 
   <!-- ─── Charge ─── -->
@@ -180,7 +193,7 @@
     <p><strong>Pas de "vraie" valeur</strong> — Sur les 300 activités analysées, l'optimum population (r → 0) demande <code>hrExp ≈ 0.65</code>, mais l'intuition de paire (deux sorties à forme égale doivent scorer pareil) demande <code>hrExp ≈ 1.3</code>. Ce conflit ne se résout pas avec plus de calibration — c'est un choix de philosophie. Pareil pour les autres facteurs.</p>
   </div>
 
-  <p>Conclusion : valeurs traileur standard (D+ = 100, dist = 110) figées, exposant HR manuel. La FC médiane (stream) supprime le biais le plus important (warm-up / drift), ce qui rend le choix de l'exposant peu critique en pratique.</p>
+  <p>Conclusion : valeurs traileur standard (D+ = 100, dist = 110) figées, exposant HR manuel. Le trimean de la distribution FC (stream) supprime les biais les plus importants (warm-up / drift / artefacts d'enregistrement), ce qui rend le choix de l'exposant peu critique en pratique.</p>
 
   <!-- ─── Filtres ─── -->
   <h2>Filtres</h2>

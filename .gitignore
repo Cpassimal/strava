@@ -15,3 +15,6 @@ activity_temp.html
 *.zip
 *.crx
 *.pem
+
+# Local cleanup scripts not part of the extension
+clean-strava-ghost.sh

@@ -328,12 +328,24 @@ const DPLUS_FACTOR = 100;       // 1 km D+ ≈ 10 km plat (rule of thumb traileu
 const DIST_BONUS_FACTOR = 110;  // bonus endurance modéré (20km gagne +8% vs 2×10km)
 const SCORE_SCALE = 3.5;        // magnitude only: brings typical runs into ~0-100
 
-// Prefer FC_mediane (from HR stream backfill) — robust to warm-up and drift.
-// Fall back to Moyenne_FC (summary endpoint) when stream not yet fetched.
-function preferredHr(d) {
-  const med = cleanNum(d.FC_mediane);
-  if (med > 0) return med;
-  return cleanNum(d.Moyenne_FC);
+// Fraction of HR reserve used as the "physiological cost" input of the fitness
+// score. Uses the trimean (P25 + 2·P50 + P75)/4 when the HR stream has been
+// backfilled — a robust central-tendency estimator that incorporates spread.
+// Independent of how the activity was recorded (auto-pause, walks counted, etc.)
+// so trends compare like-for-like across sessions.
+// Falls back to Moyenne_FC when the stream isn't fetched yet.
+function hrEffortReserveFrac(d, fcRepos, hrReserve) {
+  if (hrReserve <= 0) return null;
+  const p25 = cleanNum(d.FC_p25);
+  const p50 = cleanNum(d.FC_mediane);
+  const p75 = cleanNum(d.FC_p75);
+  if (p25 > 0 && p50 > 0 && p75 > 0) {
+    const fc = (p25 + 2 * p50 + p75) / 4;
+    return (fc - fcRepos) / hrReserve;
+  }
+  const mean = cleanNum(d.Moyenne_FC);
+  if (mean > 0) return (mean - fcRepos) / hrReserve;
+  return null;
 }
 
 // "tried but no HR data" (sensor off, manual entry) is stored as FC_mediane=null;
@@ -350,32 +362,29 @@ function hrStreamState(d) {
 function renderHrCell(a) {
   const mean = cleanNum(a.Moyenne_FC);
   if (!mean) return '-';
-  const med = cleanNum(a.FC_mediane);
-  const shown = med > 0 ? Math.round(med) : Math.round(mean);
   const state = hrStreamState(a);
   const dot = {
-    synced:  '<span class="hr-dot synced" title="FC médiane (stream récupéré)"></span>',
-    pending: '<span class="hr-dot pending" title="FC stream pas encore récupéré — rafraîchis"></span>',
+    synced:  '<span class="hr-dot synced" title="Distribution FC dispo (utilisée pour le score)"></span>',
+    pending: '<span class="hr-dot pending" title="Stream pas encore récupéré — rafraîchis pour score plus précis"></span>',
     'no-data': '<span class="hr-dot no-data" title="Stream récupéré mais sans données HR utilisables"></span>',
     none: ''
   }[state];
-  return `${shown} bpm ${dot}`;
+  return `${Math.round(mean)} bpm ${dot}`;
 }
 
-function computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, hrExp, fallbackHrEffort) {
+function computePerformanceScore(dist, elev, hours, hrEffort, hrExp, fallbackHrEffort) {
   if (hours <= 0) return 0;
   const equivDist = dist + (elev / DPLUS_FACTOR);
   const enduranceBonus = 1 + (dist / DIST_BONUS_FACTOR);
   const equivSpeed = equivDist / hours;
-  const hrReserve = fcMax - fcRepos;
-  let hrEffort;
-  if (hr > 0 && hrReserve > 0) {
-    hrEffort = (hr - fcRepos) / hrReserve;
+  let effort;
+  if (hrEffort !== null && hrEffort > 0) {
     if (hrEffort <= 0.05) return 0;
+    effort = hrEffort;
   } else {
-    hrEffort = fallbackHrEffort || 0.65;
+    effort = fallbackHrEffort || 0.65;
   }
-  const score = SCORE_SCALE * (equivSpeed * enduranceBonus) / Math.pow(hrEffort, hrExp);
+  const score = SCORE_SCALE * (equivSpeed * enduranceBonus) / Math.pow(effort, hrExp);
   return isFinite(score) ? score : 0;
 }
 
@@ -384,11 +393,8 @@ function computeFallbackHrEffort(activities, fcMax, fcRepos) {
   if (hrReserve <= 0) return 0.65;
   const efforts = [];
   activities.forEach(d => {
-    const hr = preferredHr(d);
-    if (hr > 0) {
-      const e = (hr - fcRepos) / hrReserve;
-      if (e > 0.05) efforts.push(e);
-    }
+    const e = hrEffortReserveFrac(d, fcRepos, hrReserve);
+    if (e !== null && e > 0.05) efforts.push(e);
   });
   if (efforts.length === 0) return 0.65;
   return efforts.reduce((a, b) => a + b, 0) / efforts.length;
@@ -741,11 +747,12 @@ function updateDashboard() {
   const hrExp = parseFloat(document.getElementById('hr-exponent').value) || 1.0;
   const fallbackHrEffort = computeFallbackHrEffort(filtered, fcMax, fcRepos);
 
+  const hrReserve = fcMax - fcRepos;
   filtered.forEach(d => {
     const dist = cleanNum(d.Distance_km);
     const elev = cleanNum(d.D_plus);
     const hours = hmsToHours(d.Duree);
-    const hr = preferredHr(d);
+    const hrEffort = hrEffortReserveFrac(d, fcRepos, hrReserve);
     const excluded = d.Excluded;
     if (hours === 0) return;
 
@@ -776,7 +783,7 @@ function updateDashboard() {
 
     // Only count for score if not excluded
     if (!excluded) {
-      const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, hrExp, fallbackHrEffort);
+      const score = computePerformanceScore(dist, elev, hours, hrEffort, hrExp, fallbackHrEffort);
       groupedData[key].perfSum += score;
       groupedData[key].perfCount += 1;
       totalPerfScore += score;
@@ -829,8 +836,8 @@ function updateDashboard() {
     const dist = cleanNum(d.Distance_km);
     const elev = cleanNum(d.D_plus);
     const hours = hmsToHours(d.Duree);
-    const hr = preferredHr(d);
-    const score = computePerformanceScore(dist, elev, hours, hr, fcMax, fcRepos, hrExp, fallbackHrEffort);
+    const hrEffort = hrEffortReserveFrac(d, fcRepos, hrReserve);
+    const score = computePerformanceScore(dist, elev, hours, hrEffort, hrExp, fallbackHrEffort);
     const charge = dist + elev / DPLUS_FACTOR;
     return { ...d, score, charge };
   });
