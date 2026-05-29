@@ -196,6 +196,7 @@
         <input type="range" id="heat-radius" min="1" max="20" step="1" value="6">
       </label>
       <span class="heat-stats" id="heat-stats"></span>
+      <button class="btn btn-ghost btn-fullscreen" id="btn-heatmap-fullscreen" title="Plein écran" aria-label="Plein écran">⛶</button>
     </div>
     <div class="card heatmap-card">
       <div id="heatmap-container"></div>
@@ -253,15 +254,23 @@
 
     <div class="modal-section">
       <h3>Import bulk (export Strava)</h3>
-      <p style="font-size:0.8rem; color:#666; margin-bottom:12px;">
-        Importez le fichier <code>activities.csv</code> issu de l'export de données Strava
+      <p style="font-size:0.8rem; color:#666; margin-bottom:8px;">
+        Importez vos données depuis l'archive Strava
         (<a href="https://www.strava.com/athlete/delete_your_account" target="_blank">Télécharger vos données</a>).
-        Les activités déjà présentes (même ID) ne seront pas écrasées.
+        Les activités déjà présentes (même ID) ne sont pas écrasées.
       </p>
+      <ul style="font-size:0.8rem; color:#666; margin:0 0 12px 18px; padding:0;">
+        <li><b>activities.csv</b> : métadonnées seules (rapide)</li>
+        <li><b>Dossier complet</b> : métadonnées + tracés GPX/TCX pour la heatmap</li>
+      </ul>
       <div class="modal-actions">
         <label class="btn btn-secondary" style="cursor:pointer;">
           Importer activities.csv
           <input type="file" id="btn-import-bulk" accept=".csv" style="display:none;">
+        </label>
+        <label class="btn btn-secondary" style="cursor:pointer;">
+          Importer dossier complet
+          <input type="file" id="btn-import-bulk-folder" webkitdirectory directory multiple style="display:none;">
         </label>
       </div>
     </div>
