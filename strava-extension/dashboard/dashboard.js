@@ -22,6 +22,7 @@ function saveUserConfig() {
     window: currentWindow,
     sports: [],
     heatMode: heatmapState.mode,
+    heatColorBy: heatmapState.colorBy,
     heatModeValues: heatmapState.modeValues
   };
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -42,6 +43,7 @@ async function restoreUserConfig() {
   if (config.heatModeValues) {
     heatmapState.modeValues = { ...heatmapState.modeValues, ...config.heatModeValues };
   }
+  if (config.heatColorBy) setHeatColorBy(config.heatColorBy, { skipRender: true });
   if (config.heatMode) setHeatmapMode(config.heatMode, { skipSync: true });
 
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -442,12 +444,61 @@ const heatmapState = {
   layer: null,
   dirty: true,
   mode: 'heat',
+  colorBy: 'single',  // 'single' | 'sport' | 'year' — track coloring in "lines" mode
   fitNeeded: true,
   modeValues: {
     heat: { intensity: 0.6, radius: 6 },
     lines: { intensity: 0.6, radius: 2 }
   }
 };
+
+// Qualitative palette for per-sport / per-year track coloring (first = Strava orange).
+const HEAT_PALETTE = [
+  '#fc4c02', '#0077c8', '#2dbe60', '#9b51e0', '#e0b000',
+  '#e0218a', '#00a3a3', '#ff7a45', '#5b8def', '#8bc34a',
+  '#c2185b', '#00897b', '#6d4c41', '#7cb342', '#d81b60'
+];
+
+// The grouping key for a track under the current colorBy mode (null = uniform).
+function heatColorKey(act, colorBy) {
+  if (colorBy === 'sport') return act.Type || 'Autre';
+  if (colorBy === 'year') return (act.Date || '').slice(0, 4) || '?';
+  return null;
+}
+
+// Build a stable key→color map: sports alphabetical, years most-recent first.
+function buildHeatColorMap(tracks, colorBy) {
+  const keys = [...new Set(tracks.map(t => heatColorKey(t.act, colorBy)))].filter(k => k != null);
+  keys.sort((a, b) => colorBy === 'year' ? b.localeCompare(a) : a.localeCompare(b));
+  const map = new Map();
+  keys.forEach((k, i) => map.set(k, HEAT_PALETTE[i % HEAT_PALETTE.length]));
+  return map;
+}
+
+function renderHeatLegend(colorMap, colorBy) {
+  const el = document.getElementById('heat-legend');
+  if (!el) return;
+  if (!colorMap || colorMap.size === 0) {
+    el.classList.remove('visible');
+    el.innerHTML = '';
+    return;
+  }
+  const title = colorBy === 'year' ? 'Année' : 'Sport';
+  el.innerHTML = `<div class="heat-legend-title">${title}</div>` +
+    [...colorMap.entries()].map(([k, c]) =>
+      `<div class="heat-legend-item"><span class="heat-legend-swatch" style="background:${c}"></span>${k}</div>`
+    ).join('');
+  el.classList.add('visible');
+}
+
+function setHeatColorBy(colorBy, opts = {}) {
+  heatmapState.colorBy = colorBy;
+  heatmapState.dirty = true;
+  document.querySelectorAll('#heat-color-selector .type-pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.color === colorBy);
+  });
+  if (!opts.skipRender && currentTab === 'heatmap') renderHeatmap();
+}
 
 function syncHeatSlidersToState() {
   const intensityEl = document.getElementById('heat-intensity');
@@ -518,13 +569,14 @@ function doRenderHeatmap() {
   heatmapState.map.invalidateSize();
   if (!heatmapState.dirty && heatmapState.layer) return;
 
-  // Decode all polylines once; both modes consume them.
-  const tracks = [];
+  // Decode all polylines once; both modes consume them. Keep the activity
+  // alongside each track so "lines" mode can color by sport/year.
+  const tracks = [];  // { pts, act }
   let withPoly = 0, withoutPoly = 0;
   for (const act of lastFilteredActivities) {
     if (!act.Map_polyline) { withoutPoly++; continue; }
     withPoly++;
-    tracks.push(decodePolyline(act.Map_polyline));
+    tracks.push({ pts: decodePolyline(act.Map_polyline), act });
   }
 
   const slider1 = parseFloat(document.getElementById('heat-intensity').value);
@@ -538,13 +590,15 @@ function doRenderHeatmap() {
   let pointCount = 0;
   let allBoundsLats = [], allBoundsLngs = [];
 
+  renderHeatLegend(null);  // cleared by default; lines mode re-populates below
+
   if (tracks.length > 0) {
     if (heatmapState.mode === 'heat') {
       // Sub-sample to cap at ~60k points for perf.
-      const totalRaw = tracks.reduce((s, t) => s + t.length, 0);
+      const totalRaw = tracks.reduce((s, t) => s + t.pts.length, 0);
       const sampleEvery = Math.max(1, Math.floor(totalRaw / 60000));
       const points = [];
-      for (const pts of tracks) {
+      for (const { pts } of tracks) {
         for (let i = 0; i < pts.length; i += sampleEvery) {
           points.push([pts[i][0], pts[i][1], slider1]);
           allBoundsLats.push(pts[i][0]);
@@ -561,10 +615,13 @@ function doRenderHeatmap() {
       }).addTo(heatmapState.map);
     } else {
       // Lines mode: draw each polyline with low opacity, stacking creates density.
+      const colorBy = heatmapState.colorBy || 'single';
+      const colorMap = colorBy === 'single' ? null : buildHeatColorMap(tracks, colorBy);
       const group = L.layerGroup();
-      for (const pts of tracks) {
+      for (const { pts, act } of tracks) {
+        const color = colorMap ? (colorMap.get(heatColorKey(act, colorBy)) || '#fc4c02') : '#fc4c02';
         L.polyline(pts, {
-          color: '#fc4c02',
+          color,
           weight: slider2,
           opacity: slider1 * 0.4,  // 0.04..0.8 range matches slider 0.1..2
           smoothFactor: 1.5
@@ -574,6 +631,7 @@ function doRenderHeatmap() {
       }
       group.addTo(heatmapState.map);
       heatmapState.layer = group;
+      renderHeatLegend(colorMap, colorBy);
     }
 
     if (heatmapState.fitNeeded && allBoundsLats.length > 0) {
@@ -604,6 +662,9 @@ function setHeatmapMode(mode, opts = {}) {
   document.querySelectorAll('#heat-mode-selector .type-pill').forEach(p => {
     p.classList.toggle('active', p.dataset.mode === mode);
   });
+  // Color-by selector only applies to "lines" mode (heatmap uses a gradient).
+  const colorSel = document.getElementById('heat-color-selector');
+  if (colorSel) colorSel.classList.toggle('visible', mode === 'lines');
   // Adapt labels and slider ranges to the active mode.
   const label1 = document.getElementById('heat-label-1');
   const label2 = document.getElementById('heat-label-2');
@@ -1066,6 +1127,12 @@ document.querySelectorAll('.tab').forEach(tab => {
 document.querySelectorAll('#heat-mode-selector .type-pill').forEach(pill => {
   pill.addEventListener('click', () => {
     setHeatmapMode(pill.dataset.mode);
+    saveUserConfig();
+  });
+});
+document.querySelectorAll('#heat-color-selector .type-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    setHeatColorBy(pill.dataset.color);
     saveUserConfig();
   });
 });
