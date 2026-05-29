@@ -22,6 +22,7 @@ function saveUserConfig() {
     window: currentWindow,
     sports: [],
     heatMode: heatmapState.mode,
+    heatColorBy: heatmapState.colorBy,
     heatModeValues: heatmapState.modeValues
   };
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -42,6 +43,7 @@ async function restoreUserConfig() {
   if (config.heatModeValues) {
     heatmapState.modeValues = { ...heatmapState.modeValues, ...config.heatModeValues };
   }
+  if (config.heatColorBy) setHeatColorBy(config.heatColorBy, { skipRender: true });
   if (config.heatMode) setHeatmapMode(config.heatMode, { skipSync: true });
 
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -420,17 +422,83 @@ function switchTab(tabName) {
 }
 
 // ─── Heatmap ───
+document.getElementById('btn-heatmap-fullscreen').addEventListener('click', () => {
+  const target = document.getElementById('tab-heatmap');
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else if (target.requestFullscreen) {
+    target.requestFullscreen().catch(err => console.warn('Plein écran refusé:', err));
+  }
+});
+
+document.addEventListener('fullscreenchange', () => {
+  // Leaflet computes tile bounds from the container size at init/resize time;
+  // after the viewport changes we have to nudge it to recompute.
+  if (heatmapState.map) {
+    setTimeout(() => heatmapState.map.invalidateSize(), 100);
+  }
+});
+
 const heatmapState = {
   map: null,
   layer: null,
   dirty: true,
   mode: 'heat',
+  colorBy: 'single',  // 'single' | 'sport' | 'year' — track coloring in "lines" mode
   fitNeeded: true,
   modeValues: {
     heat: { intensity: 0.6, radius: 6 },
     lines: { intensity: 0.6, radius: 2 }
   }
 };
+
+// Qualitative palette for per-sport / per-year track coloring (first = Strava orange).
+const HEAT_PALETTE = [
+  '#fc4c02', '#0077c8', '#2dbe60', '#9b51e0', '#e0b000',
+  '#e0218a', '#00a3a3', '#ff7a45', '#5b8def', '#8bc34a',
+  '#c2185b', '#00897b', '#6d4c41', '#7cb342', '#d81b60'
+];
+
+// The grouping key for a track under the current colorBy mode (null = uniform).
+function heatColorKey(act, colorBy) {
+  if (colorBy === 'sport') return act.Type || 'Autre';
+  if (colorBy === 'year') return (act.Date || '').slice(0, 4) || '?';
+  return null;
+}
+
+// Build a stable key→color map: sports alphabetical, years most-recent first.
+function buildHeatColorMap(tracks, colorBy) {
+  const keys = [...new Set(tracks.map(t => heatColorKey(t.act, colorBy)))].filter(k => k != null);
+  keys.sort((a, b) => colorBy === 'year' ? b.localeCompare(a) : a.localeCompare(b));
+  const map = new Map();
+  keys.forEach((k, i) => map.set(k, HEAT_PALETTE[i % HEAT_PALETTE.length]));
+  return map;
+}
+
+function renderHeatLegend(colorMap, colorBy) {
+  const el = document.getElementById('heat-legend');
+  if (!el) return;
+  if (!colorMap || colorMap.size === 0) {
+    el.classList.remove('visible');
+    el.innerHTML = '';
+    return;
+  }
+  const title = colorBy === 'year' ? 'Année' : 'Sport';
+  el.innerHTML = `<div class="heat-legend-title">${title}</div>` +
+    [...colorMap.entries()].map(([k, c]) =>
+      `<div class="heat-legend-item"><span class="heat-legend-swatch" style="background:${c}"></span>${k}</div>`
+    ).join('');
+  el.classList.add('visible');
+}
+
+function setHeatColorBy(colorBy, opts = {}) {
+  heatmapState.colorBy = colorBy;
+  heatmapState.dirty = true;
+  document.querySelectorAll('#heat-color-selector .type-pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.color === colorBy);
+  });
+  if (!opts.skipRender && currentTab === 'heatmap') renderHeatmap();
+}
 
 function syncHeatSlidersToState() {
   const intensityEl = document.getElementById('heat-intensity');
@@ -501,13 +569,14 @@ function doRenderHeatmap() {
   heatmapState.map.invalidateSize();
   if (!heatmapState.dirty && heatmapState.layer) return;
 
-  // Decode all polylines once; both modes consume them.
-  const tracks = [];
+  // Decode all polylines once; both modes consume them. Keep the activity
+  // alongside each track so "lines" mode can color by sport/year.
+  const tracks = [];  // { pts, act }
   let withPoly = 0, withoutPoly = 0;
   for (const act of lastFilteredActivities) {
     if (!act.Map_polyline) { withoutPoly++; continue; }
     withPoly++;
-    tracks.push(decodePolyline(act.Map_polyline));
+    tracks.push({ pts: decodePolyline(act.Map_polyline), act });
   }
 
   const slider1 = parseFloat(document.getElementById('heat-intensity').value);
@@ -521,13 +590,15 @@ function doRenderHeatmap() {
   let pointCount = 0;
   let allBoundsLats = [], allBoundsLngs = [];
 
+  renderHeatLegend(null);  // cleared by default; lines mode re-populates below
+
   if (tracks.length > 0) {
     if (heatmapState.mode === 'heat') {
       // Sub-sample to cap at ~60k points for perf.
-      const totalRaw = tracks.reduce((s, t) => s + t.length, 0);
+      const totalRaw = tracks.reduce((s, t) => s + t.pts.length, 0);
       const sampleEvery = Math.max(1, Math.floor(totalRaw / 60000));
       const points = [];
-      for (const pts of tracks) {
+      for (const { pts } of tracks) {
         for (let i = 0; i < pts.length; i += sampleEvery) {
           points.push([pts[i][0], pts[i][1], slider1]);
           allBoundsLats.push(pts[i][0]);
@@ -544,10 +615,13 @@ function doRenderHeatmap() {
       }).addTo(heatmapState.map);
     } else {
       // Lines mode: draw each polyline with low opacity, stacking creates density.
+      const colorBy = heatmapState.colorBy || 'single';
+      const colorMap = colorBy === 'single' ? null : buildHeatColorMap(tracks, colorBy);
       const group = L.layerGroup();
-      for (const pts of tracks) {
+      for (const { pts, act } of tracks) {
+        const color = colorMap ? (colorMap.get(heatColorKey(act, colorBy)) || '#fc4c02') : '#fc4c02';
         L.polyline(pts, {
-          color: '#fc4c02',
+          color,
           weight: slider2,
           opacity: slider1 * 0.4,  // 0.04..0.8 range matches slider 0.1..2
           smoothFactor: 1.5
@@ -557,6 +631,7 @@ function doRenderHeatmap() {
       }
       group.addTo(heatmapState.map);
       heatmapState.layer = group;
+      renderHeatLegend(colorMap, colorBy);
     }
 
     if (heatmapState.fitNeeded && allBoundsLats.length > 0) {
@@ -587,6 +662,9 @@ function setHeatmapMode(mode, opts = {}) {
   document.querySelectorAll('#heat-mode-selector .type-pill').forEach(p => {
     p.classList.toggle('active', p.dataset.mode === mode);
   });
+  // Color-by selector only applies to "lines" mode (heatmap uses a gradient).
+  const colorSel = document.getElementById('heat-color-selector');
+  if (colorSel) colorSel.classList.toggle('visible', mode === 'lines');
   // Adapt labels and slider ranges to the active mode.
   const label1 = document.getElementById('heat-label-1');
   const label2 = document.getElementById('heat-label-2');
@@ -1052,6 +1130,12 @@ document.querySelectorAll('#heat-mode-selector .type-pill').forEach(pill => {
     saveUserConfig();
   });
 });
+document.querySelectorAll('#heat-color-selector .type-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    setHeatColorBy(pill.dataset.color);
+    saveUserConfig();
+  });
+});
 
 // Table sort
 document.querySelectorAll('.activities-table th[data-sort]').forEach(th => {
@@ -1257,7 +1341,7 @@ document.getElementById('btn-import-bulk').addEventListener('change', async (e) 
   const file = e.target.files[0];
   if (!file) return;
   const text = await file.text();
-  const activities = parseStravaBulkCSV(text);
+  const { activities } = parseStravaBulkCSV(text);
   if (activities.length === 0) { alert('Aucune activité compatible trouvée dans le fichier.'); e.target.value = ''; return; }
   if (!confirm(`${activities.length} activités trouvées. Les activités déjà présentes ne seront pas écrasées. Continuer ?`)) { e.target.value = ''; return; }
   showLoading('Import bulk en cours...');
@@ -1269,9 +1353,92 @@ document.getElementById('btn-import-bulk').addEventListener('change', async (e) 
   e.target.value = '';
 });
 
+// Bulk import from full Strava export folder (CSV + GPX/TCX tracks)
+document.getElementById('btn-import-bulk-folder').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  if (files.length === 0) return;
+
+  const csvFile = files.find(f => f.name.toLowerCase() === 'activities.csv');
+  if (!csvFile) {
+    const sample = files.slice(0, 3).map(f => f.webkitRelativePath || f.name).join('\n  - ');
+    alert(
+      `activities.csv non trouvé dans le dossier sélectionné.\n\n` +
+      `Sélectionnez le dossier racine de l'export Strava — celui qui contient ` +
+      `à la fois "activities.csv" et le sous-dossier "activities/".\n\n` +
+      `${files.length} fichiers reçus. Aperçu :\n  - ${sample}`
+    );
+    e.target.value = '';
+    return;
+  }
+
+  showLoading('Lecture de activities.csv...');
+  const csvText = await csvFile.text();
+  const { activities, filenameToId } = parseStravaBulkCSV(csvText);
+  if (activities.length === 0) {
+    hideLoading();
+    alert('Aucune activité compatible trouvée dans activities.csv.');
+    e.target.value = '';
+    return;
+  }
+
+  const trackFiles = files.filter(f => /\.(gpx|tcx|fit)(\.gz)?$/i.test(f.name));
+
+  hideLoading();
+  if (!confirm(
+    `Trouvé :\n` +
+    `• ${activities.length} activités dans activities.csv\n` +
+    `• ${trackFiles.length} tracés GPX/TCX/FIT à parser\n\n` +
+    `Les activités déjà présentes ne seront pas écrasées. Continuer ?`
+  )) { e.target.value = ''; return; }
+
+  // Parse track files in parallel batches.
+  const polylineByActivityId = new Map();
+  const chunkSize = 8;
+  let parsed = 0, withTrack = 0, errors = 0;
+  showLoading(`Tracés: 0/${trackFiles.length}...`);
+  for (let i = 0; i < trackFiles.length; i += chunkSize) {
+    const batch = trackFiles.slice(i, i + chunkSize);
+    const results = await Promise.all(batch.map(f =>
+      parseTrackFile(f).catch(err => { console.warn(`Échec ${f.name}:`, err); errors++; return null; })
+    ));
+    for (let j = 0; j < batch.length; j++) {
+      const poly = results[j];
+      if (!poly) continue;
+      const id = filenameToId.get(batch[j].name);
+      if (id) {
+        polylineByActivityId.set(String(id), poly);
+        withTrack++;
+      }
+    }
+    parsed += batch.length;
+    if (i % 32 === 0 || parsed >= trackFiles.length) {
+      showLoading(`Tracés: ${parsed}/${trackFiles.length} (${withTrack} associés)...`);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  // Attach polylines (leave absent if not found, so API backfill can still run later).
+  for (const a of activities) {
+    const poly = polylineByActivityId.get(String(a.ID));
+    if (poly) a.Map_polyline = poly;
+  }
+
+  showLoading('Sauvegarde...');
+  await sendMessage({ action: 'bulkImportStrava', activities });
+  hideLoading();
+  alert(
+    `Import terminé !\n` +
+    `${activities.length} activités traitées, ${withTrack} tracés associés` +
+    (errors > 0 ? ` (${errors} erreurs de parsing).` : '.')
+  );
+  await loadData();
+  updateTopBar();
+  e.target.value = '';
+});
+
 function parseStravaBulkCSV(text) {
   const rows = parseCSVRows(text);
-  if (rows.length < 2) return [];
+  if (rows.length < 2) return { activities: [], filenameToId: new Map() };
   const headers = rows[0];
   const col = name => headers.indexOf(name);
 
@@ -1281,6 +1448,7 @@ function parseStravaBulkCSV(text) {
   const iActivityDate = col('Activity Date');
   const iActivityName = col('Activity Name');
   const iActivityType = col('Activity Type');
+  const iFilename = col('Filename');
   // Moving Time, Distance, Elevation Gain are in the second block (after col 15)
   const iMovingTime = headers.indexOf('Moving Time', 15);
   const iDistance = headers.indexOf('Distance', 15);
@@ -1288,6 +1456,10 @@ function parseStravaBulkCSV(text) {
   const iAvgHR = headers.indexOf('Average Heart Rate', 15);
 
   const activities = [];
+  // The CSV "Filename" column is e.g. "activities/87190638.gpx.gz" — the upload ID,
+  // which differs from the Activity ID. We index by basename for matching against
+  // File.name from the folder picker.
+  const filenameToId = new Map();
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     const id = r[iActivityId];
@@ -1307,6 +1479,11 @@ function parseStravaBulkCSV(text) {
     const s = Math.round(movingSec % 60);
     const duree = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 
+    if (iFilename >= 0 && r[iFilename]) {
+      const basename = r[iFilename].split('/').pop();
+      if (basename) filenameToId.set(basename, id);
+    }
+
     activities.push({
       ID: id,
       Nom: r[iActivityName] || '',
@@ -1320,7 +1497,186 @@ function parseStravaBulkCSV(text) {
       Excluded: false
     });
   }
-  return activities;
+  return { activities, filenameToId };
+}
+
+async function parseTrackFile(file) {
+  const lower = file.name.toLowerCase();
+  let buffer;
+  if (lower.endsWith('.gz')) {
+    const buf = await file.arrayBuffer();
+    const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
+    buffer = await new Response(stream).arrayBuffer();
+  } else {
+    buffer = await file.arrayBuffer();
+  }
+
+  let points;
+  if (/\.fit(\.gz)?$/i.test(file.name)) {
+    points = parseFITPoints(buffer);
+  } else {
+    const text = new TextDecoder('utf-8').decode(buffer);
+    if (lower.includes('.gpx')) points = parseGPXPoints(text);
+    else if (lower.includes('.tcx')) points = parseTCXPoints(text);
+    else return null;
+  }
+
+  if (!points || points.length < 2) return null;
+  return encodePolyline(decimatePoints(points, 500));
+}
+
+// Minimal FIT parser — extracts lat/lng from "record" messages (global msg #20,
+// fields 0=position_lat, 1=position_long, both sint32 semicircles).
+// Spec: https://developer.garmin.com/fit/protocol/
+function parseFITPoints(buffer) {
+  const view = new DataView(buffer);
+  const len = view.byteLength;
+  if (len < 14) return [];
+
+  const headerSize = view.getUint8(0);
+  if (headerSize !== 12 && headerSize !== 14) return [];
+  const sig = String.fromCharCode(
+    view.getUint8(8), view.getUint8(9), view.getUint8(10), view.getUint8(11)
+  );
+  if (sig !== '.FIT') return [];
+
+  const dataSize = view.getUint32(4, true);
+  const dataEnd = Math.min(headerSize + dataSize, len - 2); // exclude trailing CRC
+  let pos = headerSize;
+
+  // localType -> { globalMsg, fields:[{num,size,baseType}], totalSize, le }
+  const defs = new Map();
+  const points = [];
+  const SEMI_TO_DEG = 180 / 2147483648;
+
+  while (pos < dataEnd) {
+    const recHeader = view.getUint8(pos++);
+    let isDef = false;
+    let localType, hasDev = false;
+
+    if (recHeader & 0x80) {
+      // Compressed timestamp header — always a data record.
+      localType = (recHeader >> 5) & 0x3;
+    } else {
+      isDef = !!(recHeader & 0x40);
+      hasDev = !!(recHeader & 0x20);
+      localType = recHeader & 0xF;
+    }
+
+    if (isDef) {
+      pos += 1; // reserved
+      const arch = view.getUint8(pos++);
+      const le = arch === 0;
+      const globalMsg = view.getUint16(pos, le); pos += 2;
+      const numFields = view.getUint8(pos++);
+      const fields = [];
+      let totalSize = 0;
+      for (let i = 0; i < numFields; i++) {
+        const num = view.getUint8(pos++);
+        const size = view.getUint8(pos++);
+        const baseType = view.getUint8(pos++);
+        fields.push({ num, size, baseType });
+        totalSize += size;
+      }
+      if (hasDev) {
+        const numDev = view.getUint8(pos++);
+        for (let i = 0; i < numDev; i++) {
+          const num = view.getUint8(pos++);
+          const size = view.getUint8(pos++);
+          const baseType = view.getUint8(pos++);
+          fields.push({ num: -1, size, baseType }); // dev field — read past, ignore
+          totalSize += size;
+        }
+      }
+      defs.set(localType, { globalMsg, fields, totalSize, le });
+    } else {
+      const def = defs.get(localType);
+      if (!def) break; // unknown definition — bail (file likely malformed)
+      if (pos + def.totalSize > dataEnd) break;
+
+      if (def.globalMsg === 20) { // record
+        let lat = null, lng = null;
+        let off = pos;
+        for (const f of def.fields) {
+          if (f.num === 0 && f.size === 4) {
+            const v = view.getInt32(off, def.le);
+            if (v !== 0x7FFFFFFF) lat = v * SEMI_TO_DEG;
+          } else if (f.num === 1 && f.size === 4) {
+            const v = view.getInt32(off, def.le);
+            if (v !== 0x7FFFFFFF) lng = v * SEMI_TO_DEG;
+          }
+          off += f.size;
+        }
+        if (lat !== null && lng !== null) points.push([lat, lng]);
+      }
+      pos += def.totalSize;
+    }
+  }
+
+  return points;
+}
+
+function parseGPXPoints(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const pts = doc.getElementsByTagName('trkpt');
+  const points = [];
+  for (const pt of pts) {
+    const lat = parseFloat(pt.getAttribute('lat'));
+    const lng = parseFloat(pt.getAttribute('lon'));
+    if (!isNaN(lat) && !isNaN(lng)) points.push([lat, lng]);
+  }
+  return points;
+}
+
+function parseTCXPoints(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const positions = doc.getElementsByTagName('Position');
+  const points = [];
+  for (const pos of positions) {
+    const latEl = pos.getElementsByTagName('LatitudeDegrees')[0];
+    const lngEl = pos.getElementsByTagName('LongitudeDegrees')[0];
+    if (latEl && lngEl) {
+      const lat = parseFloat(latEl.textContent);
+      const lng = parseFloat(lngEl.textContent);
+      if (!isNaN(lat) && !isNaN(lng)) points.push([lat, lng]);
+    }
+  }
+  return points;
+}
+
+function decimatePoints(points, maxPoints) {
+  if (points.length <= maxPoints) return points;
+  const stride = Math.ceil(points.length / maxPoints);
+  const out = [];
+  for (let i = 0; i < points.length; i += stride) out.push(points[i]);
+  const last = points[points.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
+// Google encoded polyline algorithm (same format Strava returns as summary_polyline).
+function encodePolyline(points) {
+  let result = '';
+  let prevLat = 0, prevLng = 0;
+  for (const [lat, lng] of points) {
+    const ilat = Math.round(lat * 1e5);
+    const ilng = Math.round(lng * 1e5);
+    result += encodePolylineNumber(ilat - prevLat) + encodePolylineNumber(ilng - prevLng);
+    prevLat = ilat;
+    prevLng = ilng;
+  }
+  return result;
+}
+
+function encodePolylineNumber(num) {
+  num = num < 0 ? ~(num << 1) : (num << 1);
+  let result = '';
+  while (num >= 0x20) {
+    result += String.fromCharCode((0x20 | (num & 0x1f)) + 63);
+    num >>>= 5;
+  }
+  result += String.fromCharCode(num + 63);
+  return result;
 }
 
 function parseStravaDate(str) {
