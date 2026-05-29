@@ -23,6 +23,7 @@ function saveUserConfig() {
     sports: [],
     heatMode: heatmapState.mode,
     heatColorBy: heatmapState.colorBy,
+    heatPalette: heatmapState.palette,
     heatModeValues: heatmapState.modeValues
   };
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -43,6 +44,7 @@ async function restoreUserConfig() {
   if (config.heatModeValues) {
     heatmapState.modeValues = { ...heatmapState.modeValues, ...config.heatModeValues };
   }
+  if (config.heatPalette) setHeatPalette(config.heatPalette, { skipRender: true });
   if (config.heatColorBy) setHeatColorBy(config.heatColorBy, { skipRender: true });
   if (config.heatMode) setHeatmapMode(config.heatMode, { skipSync: true });
 
@@ -445,6 +447,7 @@ const heatmapState = {
   dirty: true,
   mode: 'heat',
   colorBy: 'single',  // 'single' | 'sport' | 'year' — track coloring in "lines" mode
+  palette: 'turbo',  // gradient key (see HEAT_GRADIENTS) used by the 'year' colorBy
   fitNeeded: true,
   modeValues: {
     heat: { intensity: 0.6, radius: 6 },
@@ -452,12 +455,42 @@ const heatmapState = {
   }
 };
 
-// Qualitative palette for per-sport / per-year track coloring (first = Strava orange).
+// Qualitative palette for per-sport track coloring (categorical, first = Strava orange).
 const HEAT_PALETTE = [
   '#fc4c02', '#0077c8', '#2dbe60', '#9b51e0', '#e0b000',
   '#e0218a', '#00a3a3', '#ff7a45', '#5b8def', '#8bc34a',
   '#c2185b', '#00897b', '#6d4c41', '#7cb342', '#d81b60'
 ];
+
+// Sequential ramps for per-year coloring (old → recent). Ordered data reads far
+// better on a continuous gradient than a random palette. All stops are kept
+// saturated (no pale/near-white) so tracks stay legible over the light OSM map.
+const HEAT_GRADIENTS = {
+  turbo:      { label: 'Turbo',         stops: [[48,18,59],[64,90,220],[36,160,230],[27,196,205],[60,231,123],[140,225,60],[230,193,40],[252,113,28],[213,42,3],[122,4,2]] },
+  viridis:    { label: 'Viridis',       stops: [[68,1,84],[65,68,135],[42,120,142],[34,168,132],[93,201,99],[210,225,27]] },
+  plasma:     { label: 'Plasma',        stops: [[13,8,135],[126,3,168],[204,71,120],[248,149,64],[245,219,30]] },
+  inferno:    { label: 'Inferno',       stops: [[20,11,52],[88,25,99],[160,45,86],[221,81,58],[243,144,28],[248,186,33]] },
+  coldhot:    { label: 'Froid → Chaud', stops: [[37,52,148],[29,120,190],[20,170,160],[90,190,60],[235,170,20],[227,100,30],[200,25,45]] }
+};
+const DEFAULT_HEAT_PALETTE = 'turbo';
+
+// CSS preview gradient for a list of [r,g,b] stops.
+function gradientCss(stops) {
+  const n = stops.length;
+  return 'linear-gradient(to right,' + stops.map((s, i) =>
+    `rgb(${s[0]},${s[1]},${s[2]}) ${Math.round(i / (n - 1) * 100)}%`).join(',') + ')';
+}
+
+// Interpolate the active palette at t∈[0,1] → "rgb(r,g,b)".
+function colorRamp(t, paletteKey) {
+  const stops = (HEAT_GRADIENTS[paletteKey] || HEAT_GRADIENTS[DEFAULT_HEAT_PALETTE]).stops;
+  t = Math.max(0, Math.min(1, t));
+  const x = t * (stops.length - 1);
+  const i = Math.floor(x), f = x - i;
+  const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
+  const c = j => Math.round(a[j] + (b[j] - a[j]) * f);
+  return `rgb(${c(0)},${c(1)},${c(2)})`;
+}
 
 // The grouping key for a track under the current colorBy mode (null = uniform).
 function heatColorKey(act, colorBy) {
@@ -466,12 +499,26 @@ function heatColorKey(act, colorBy) {
   return null;
 }
 
-// Build a stable key→color map: sports alphabetical, years most-recent first.
+// Build a key→color map. Years use a continuous gradient keyed on the actual
+// year value (so gaps stay proportional); sports use the qualitative palette.
+// Both legends are ordered most-recent / alphabetical first.
 function buildHeatColorMap(tracks, colorBy) {
   const keys = [...new Set(tracks.map(t => heatColorKey(t.act, colorBy)))].filter(k => k != null);
-  keys.sort((a, b) => colorBy === 'year' ? b.localeCompare(a) : a.localeCompare(b));
   const map = new Map();
-  keys.forEach((k, i) => map.set(k, HEAT_PALETTE[i % HEAT_PALETTE.length]));
+  if (colorBy === 'year') {
+    const years = keys.map(Number).filter(y => !isNaN(y));
+    const min = years.length ? Math.min(...years) : 0;
+    const max = years.length ? Math.max(...years) : 0;
+    const span = (max - min) || 1;
+    keys.sort((a, b) => b.localeCompare(a));
+    keys.forEach(k => {
+      const y = Number(k);
+      map.set(k, colorRamp(isNaN(y) ? 0 : (y - min) / span, heatmapState.palette));
+    });
+  } else {
+    keys.sort((a, b) => a.localeCompare(b));
+    keys.forEach((k, i) => map.set(k, HEAT_PALETTE[i % HEAT_PALETTE.length]));
+  }
   return map;
 }
 
@@ -491,11 +538,56 @@ function renderHeatLegend(colorMap, colorBy) {
   el.classList.add('visible');
 }
 
+// Strava activity URL for a track (stored link, or rebuilt from the ID).
+function heatTrackUrl(act) {
+  return act.Lien_activite || (act.ID ? `https://www.strava.com/activities/${act.ID}` : null);
+}
+
+// Hover tooltip identifying the activity behind a track.
+function heatTrackTooltip(act) {
+  const escape = s => String(s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const date = DateTime.fromISO(act.Date);
+  const dateStr = date.isValid ? date.toFormat('dd/MM/yyyy') : (act.Date || '');
+  const dist = cleanNum(act.Distance_km);
+  const dplus = cleanNum(act.D_plus);
+  return [
+    `<strong>${escape(act.Nom || 'Activité')}</strong>`,
+    [act.Type, dateStr].filter(Boolean).map(escape).join(' · '),
+    `${dist.toFixed(1)} km${dplus ? ` · ${dplus} m D+` : ''}`,
+    `<span style="color:#fc4c02">Ouvrir sur Strava ↗</span>`
+  ].join('<br>');
+}
+
 function setHeatColorBy(colorBy, opts = {}) {
   heatmapState.colorBy = colorBy;
   heatmapState.dirty = true;
-  document.querySelectorAll('#heat-color-selector .type-pill').forEach(p => {
-    p.classList.toggle('active', p.dataset.color === colorBy);
+  document.querySelectorAll('#heat-config-panel input[name="heat-color"]').forEach(r => {
+    r.checked = r.value === colorBy;
+  });
+  // The palette picker only matters for the gradient ('year') mode.
+  const palSec = document.getElementById('heat-palette-section');
+  if (palSec) palSec.style.display = colorBy === 'year' ? 'block' : 'none';
+  if (!opts.skipRender && currentTab === 'heatmap') renderHeatmap();
+}
+
+// Render the palette options (gradient preview + label) into the config panel.
+function renderHeatPaletteList() {
+  const el = document.getElementById('heat-palette-list');
+  if (!el) return;
+  el.innerHTML = Object.entries(HEAT_GRADIENTS).map(([key, g]) =>
+    `<button type="button" class="heat-palette-opt${key === heatmapState.palette ? ' selected' : ''}" data-palette="${key}" title="${g.label}">
+       <span class="heat-palette-bar" style="background:${gradientCss(g.stops)}"></span>
+       <span class="heat-palette-name">${g.label}</span>
+     </button>`).join('');
+}
+
+function setHeatPalette(key, opts = {}) {
+  if (!HEAT_GRADIENTS[key]) key = DEFAULT_HEAT_PALETTE;
+  heatmapState.palette = key;
+  heatmapState.dirty = true;
+  document.querySelectorAll('#heat-palette-list .heat-palette-opt').forEach(b => {
+    b.classList.toggle('selected', b.dataset.palette === key);
   });
   if (!opts.skipRender && currentTab === 'heatmap') renderHeatmap();
 }
@@ -538,6 +630,21 @@ function decodePolyline(encoded) {
     points.push([lat / 1e5, lng / 1e5]);
   }
   return points;
+}
+
+// Leaflet bounds [[minLat,minLng],[maxLat,maxLng]] from parallel coord arrays.
+// Loops instead of Math.min(...arr): spreading a huge point array (full GPX
+// import = 100k+ points) overflows the call stack.
+function latLngBounds(lats, lngs) {
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (let i = 0; i < lats.length; i++) {
+    const la = lats[i], ln = lngs[i];
+    if (la < minLat) minLat = la;
+    if (la > maxLat) maxLat = la;
+    if (ln < minLng) minLng = ln;
+    if (ln > maxLng) maxLng = ln;
+  }
+  return [[minLat, minLng], [maxLat, maxLng]];
 }
 
 function initHeatmapMap() {
@@ -620,12 +727,22 @@ function doRenderHeatmap() {
       const group = L.layerGroup();
       for (const { pts, act } of tracks) {
         const color = colorMap ? (colorMap.get(heatColorKey(act, colorBy)) || '#fc4c02') : '#fc4c02';
-        L.polyline(pts, {
+        const line = L.polyline(pts, {
           color,
           weight: slider2,
           opacity: slider1 * 0.4,  // 0.04..0.8 range matches slider 0.1..2
           smoothFactor: 1.5
-        }).addTo(group);
+        });
+        // Identify the activity on hover; click opens it on Strava.
+        line.bindTooltip(heatTrackTooltip(act), { sticky: true, direction: 'top' });
+        const url = heatTrackUrl(act);
+        if (url) {
+          line.on('click', () => window.open(url, '_blank', 'noopener'));
+          // Canvas-rendered paths have no DOM node, so toggle the cursor on the map container.
+          line.on('mouseover', () => { heatmapState.map.getContainer().style.cursor = 'pointer'; });
+          line.on('mouseout', () => { heatmapState.map.getContainer().style.cursor = ''; });
+        }
+        line.addTo(group);
         for (const p of pts) { allBoundsLats.push(p[0]); allBoundsLngs.push(p[1]); }
         pointCount += pts.length;
       }
@@ -635,11 +752,7 @@ function doRenderHeatmap() {
     }
 
     if (heatmapState.fitNeeded && allBoundsLats.length > 0) {
-      const bounds = [
-        [Math.min(...allBoundsLats), Math.min(...allBoundsLngs)],
-        [Math.max(...allBoundsLats), Math.max(...allBoundsLngs)]
-      ];
-      heatmapState.map.fitBounds(bounds, { padding: [30, 30] });
+      heatmapState.map.fitBounds(latLngBounds(allBoundsLats, allBoundsLngs), { padding: [30, 30] });
       heatmapState.fitNeeded = false;
     }
   }
@@ -662,9 +775,10 @@ function setHeatmapMode(mode, opts = {}) {
   document.querySelectorAll('#heat-mode-selector .type-pill').forEach(p => {
     p.classList.toggle('active', p.dataset.mode === mode);
   });
-  // Color-by selector only applies to "lines" mode (heatmap uses a gradient).
-  const colorSel = document.getElementById('heat-color-selector');
-  if (colorSel) colorSel.classList.toggle('visible', mode === 'lines');
+  // Color config only applies to "lines" mode (heatmap uses a density gradient).
+  const colorCfg = document.getElementById('heat-config');
+  if (colorCfg) colorCfg.classList.toggle('visible', mode === 'lines');
+  if (mode !== 'lines') document.getElementById('heat-config-panel').classList.remove('open');
   // Adapt labels and slider ranges to the active mode.
   const label1 = document.getElementById('heat-label-1');
   const label2 = document.getElementById('heat-label-2');
@@ -1130,11 +1244,29 @@ document.querySelectorAll('#heat-mode-selector .type-pill').forEach(pill => {
     saveUserConfig();
   });
 });
-document.querySelectorAll('#heat-color-selector .type-pill').forEach(pill => {
-  pill.addEventListener('click', () => {
-    setHeatColorBy(pill.dataset.color);
+// Color config popover: cog toggles it, radios pick the mode, outside-click closes.
+document.getElementById('btn-heat-config').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('heat-config-panel').classList.toggle('open');
+});
+document.querySelectorAll('#heat-config-panel input[name="heat-color"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    setHeatColorBy(radio.value);
     saveUserConfig();
   });
+});
+renderHeatPaletteList();
+document.getElementById('heat-palette-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('.heat-palette-opt');
+  if (!btn) return;
+  setHeatPalette(btn.dataset.palette);
+  saveUserConfig();
+});
+document.addEventListener('click', (e) => {
+  const cfg = document.getElementById('heat-config');
+  if (cfg && !cfg.contains(e.target)) {
+    document.getElementById('heat-config-panel').classList.remove('open');
+  }
 });
 
 // Table sort
