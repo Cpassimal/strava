@@ -623,10 +623,56 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
 .heat-stats { color: #888; font-size: 0.8rem; margin-left: auto; }
 .btn-fullscreen { padding: 4px 12px; font-size: 1rem; line-height: 1; }
 
-/* Color-by selector: only meaningful in "Tracés" mode, hidden otherwise. */
-.heat-color-selector { display: none; align-items: center; }
-.heat-color-selector.visible { display: flex; }
-.heat-color-label { font-size: 0.85rem; }
+/* Color config (cog + popover): only meaningful in "Tracés" mode. */
+.heat-config { position: relative; display: none; }
+.heat-config.visible { display: inline-flex; }
+.btn-config { padding: 4px 12px; font-size: 1rem; line-height: 1; }
+.heat-config-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 1000;
+  min-width: 210px;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid #d2d2d7;
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+.heat-config-panel.open { display: block; }
+.heat-config-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 8px; color: #1d1d1f; }
+.heat-config-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+.heat-config-sub {
+  display: none;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #ececf0;
+}
+.heat-palette-list { display: flex; flex-direction: column; gap: 3px; }
+.heat-palette-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.heat-palette-opt:hover { background: #f5f5f7; }
+.heat-palette-opt.selected { border-color: #fc4c02; background: #fff5f0; }
+.heat-palette-bar { width: 70px; height: 12px; border-radius: 3px; flex: none; }
+.heat-palette-name { font-size: 0.82rem; color: #1d1d1f; }
 
 .heatmap-card { padding: 0; overflow: hidden; position: relative; }
 
