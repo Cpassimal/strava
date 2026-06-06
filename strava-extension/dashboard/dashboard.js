@@ -24,6 +24,7 @@ function saveUserConfig() {
     heatMode: heatmapState.mode,
     heatColorBy: heatmapState.colorBy,
     heatPalette: heatmapState.palette,
+    heatBasemap: heatmapState.basemap,
     heatModeValues: heatmapState.modeValues
   };
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -46,6 +47,7 @@ async function restoreUserConfig() {
   }
   if (config.heatPalette) setHeatPalette(config.heatPalette, { skipRender: true });
   if (config.heatColorBy) setHeatColorBy(config.heatColorBy, { skipRender: true });
+  if (config.heatBasemap) setHeatBasemap(config.heatBasemap);
   if (config.heatMode) setHeatmapMode(config.heatMode, { skipSync: true });
 
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -444,16 +446,64 @@ document.addEventListener('fullscreenchange', () => {
 const heatmapState = {
   map: null,
   layer: null,
+  tileLayer: null,   // the active basemap layer (swapped by setHeatBasemap)
+  heatTracks: null,  // cached { pts, len, bbox } for heat mode (rebuilt per zoom)
+  statBase: null,    // { withPoly, withoutPoly } for the heat-mode stat line
+  _heatMoveHandler: null,  // moveend listener that re-densifies on zoom/pan
   dirty: true,
   mode: 'heat',
   colorBy: 'single',  // 'single' | 'sport' | 'year' — track coloring in "lines" mode
   palette: 'turbo',  // gradient key (see HEAT_GRADIENTS) used by the 'year' colorBy
+  basemap: 'osm',    // background tile provider (see HEAT_BASEMAPS)
   fitNeeded: true,
   modeValues: {
     heat: { intensity: 0.6, radius: 6 },
     lines: { intensity: 0.6, radius: 2 }
   }
 };
+
+// Selectable background tile providers. All load as plain <img> tiles (no API
+// key, no host_permissions needed). The B&W / dark maps give colored tracks and
+// the heat gradient far more contrast than the default colored OSM plan.
+const HEAT_BASEMAPS = {
+  osm:   { label: 'Plan (couleur)', url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',         attribution: '© OpenStreetMap',                              maxZoom: 19, subdomains: 'abc' },
+  light: { label: 'Noir & blanc',   url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', attribution: '© OpenStreetMap, © CARTO',                     maxZoom: 20, subdomains: 'abcd' },
+  dark:  { label: 'Sombre',         url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',  attribution: '© OpenStreetMap, © CARTO',                     maxZoom: 20, subdomains: 'abcd' },
+  topo:  { label: 'OpenTopoMap',    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',            attribution: '© OpenStreetMap, SRTM | © OpenTopoMap (CC-BY-SA)', maxZoom: 17, subdomains: 'abc' }
+};
+const DEFAULT_BASEMAP = 'osm';
+
+function makeBasemapLayer(key) {
+  const bm = HEAT_BASEMAPS[key] || HEAT_BASEMAPS[DEFAULT_BASEMAP];
+  return L.tileLayer(bm.url, {
+    attribution: bm.attribution,
+    maxZoom: bm.maxZoom || 19,
+    subdomains: bm.subdomains || 'abc'
+  });
+}
+
+// Fill the basemap <select> from HEAT_BASEMAPS so labels stay single-sourced.
+function renderHeatBasemapOptions() {
+  const sel = document.getElementById('heat-basemap');
+  if (!sel) return;
+  sel.innerHTML = Object.entries(HEAT_BASEMAPS).map(([key, bm]) =>
+    `<option value="${key}">${bm.label}</option>`).join('');
+  sel.value = heatmapState.basemap;
+}
+
+// Swap the background tiles in place. Only the basemap changes — the heat/line
+// overlay is untouched, so no re-render (and no map refit) is needed.
+function setHeatBasemap(key) {
+  if (!HEAT_BASEMAPS[key]) key = DEFAULT_BASEMAP;
+  heatmapState.basemap = key;
+  const sel = document.getElementById('heat-basemap');
+  if (sel && sel.value !== key) sel.value = key;
+  if (heatmapState.map) {
+    if (heatmapState.tileLayer) heatmapState.map.removeLayer(heatmapState.tileLayer);
+    heatmapState.tileLayer = makeBasemapLayer(key).addTo(heatmapState.map);
+    heatmapState.tileLayer.bringToBack();  // keep tiles beneath the overlay
+  }
+}
 
 // Qualitative palette for per-sport track coloring (categorical, first = Strava orange).
 const HEAT_PALETTE = [
@@ -647,13 +697,127 @@ function latLngBounds(lats, lngs) {
   return [[minLat, minLng], [maxLat, maxLng]];
 }
 
+// Great-circle distance in meters between two [lat, lng] points.
+function haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Total length of a [[lat,lng],...] polyline in meters.
+function trackLengthM(pts) {
+  let d = 0;
+  for (let i = 1; i < pts.length; i++) {
+    d += haversineM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+  }
+  return d;
+}
+
+// Resample a track to evenly-spaced points (~one every `stepM` meters),
+// interpolating along each edge. GPS tracks are sampled by *time*, so raw points
+// bunch up where the athlete was slow and gap on fast/straight edges; feeding
+// them straight to the heat layer paints blobs at the dense spots and leaves the
+// edges empty. Walking the edges at a fixed *distance* step makes intensity track
+// how often a path is travelled, not the recorder's cadence. Linear lat/lng
+// interpolation is plenty accurate at these step sizes.
+function densifyTrack(pts, stepM) {
+  if (pts.length < 2) return pts.slice();
+  const out = [pts[0]];
+  let distSinceLast = 0;  // meters covered since the last emitted point
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const segLen = haversineM(a[0], a[1], b[0], b[1]);
+    if (segLen === 0) continue;
+    let pos = 0;  // meters already consumed along this edge
+    while (distSinceLast + (segLen - pos) >= stepM) {
+      pos += stepM - distSinceLast;
+      const f = pos / segLen;
+      out.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+      distSinceLast = 0;
+    }
+    distSinceLast += segLen - pos;
+  }
+  return out;
+}
+
+// Web-Mercator ground resolution (meters per screen pixel) at a latitude/zoom.
+function metersPerPixel(lat, zoom) {
+  return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+}
+
+// (Re)build the heat layer's points for the current zoom and viewport. leaflet-
+// heat draws fixed-pixel circles, so to keep tracks continuous (not a string of
+// dots) the point spacing must stay ~constant in *pixels* — which means the
+// meter step has to shrink as you zoom in. We only densify tracks intersecting
+// the padded viewport, so the point count stays bounded: small step ↔ small
+// visible area. Runs on every zoom/pan via the moveend handler.
+function updateHeatPoints() {
+  const map = heatmapState.map;
+  if (!map || !heatmapState.layer || heatmapState.mode !== 'heat') return;
+  const tracks = heatmapState.heatTracks || [];
+
+  const center = map.getCenter();
+  const mpp = metersPerPixel(center.lat, map.getZoom());
+  const radiusPx = parseInt(document.getElementById('heat-radius').value, 10) || 6;
+  const intensity = parseFloat(document.getElementById('heat-intensity').value);
+  // Aim ~60% of the radius between points so the circles overlap into a line.
+  const MIN_STEP_M = 6;
+  const MAX_POINTS = 120000;
+
+  const b = map.getBounds().pad(0.3);
+  const south = b.getSouth(), north = b.getNorth(), west = b.getWest(), east = b.getEast();
+
+  // Cull to the viewport, then pick the step. If the visible length would blow
+  // the point budget (zoomed-out over a huge dataset), coarsen the step instead
+  // of truncating, so density stays uniform rather than cutting off a region.
+  const visible = [];
+  let visibleLen = 0;
+  for (const t of tracks) {
+    if (t.maxLat < south || t.minLat > north || t.maxLng < west || t.minLng > east) continue;
+    visible.push(t);
+    visibleLen += t.len;
+  }
+  let stepM = Math.max(MIN_STEP_M, radiusPx * 0.6 * mpp);
+  if (visibleLen / stepM > MAX_POINTS) stepM = visibleLen / MAX_POINTS;
+
+  const points = [];
+  for (const t of visible) {
+    for (const [lat, lng] of densifyTrack(t.pts, stepM)) {
+      if (lat < south || lat > north || lng < west || lng > east) continue;
+      points.push([lat, lng, intensity]);
+    }
+  }
+  heatmapState.layer.setLatLngs(points);
+
+  const base = heatmapState.statBase || { withPoly: 0, withoutPoly: 0 };
+  const stats = document.getElementById('heat-stats');
+  if (stats) {
+    stats.textContent = `${base.withPoly} activités tracées` +
+      `${base.withoutPoly > 0 ? ` · ${base.withoutPoly} sans tracé` : ''} · ${points.length} points`;
+  }
+}
+
+function attachHeatZoomHandler() {
+  detachHeatZoomHandler();
+  heatmapState._heatMoveHandler = () => updateHeatPoints();
+  heatmapState.map.on('moveend', heatmapState._heatMoveHandler);
+}
+
+function detachHeatZoomHandler() {
+  if (heatmapState._heatMoveHandler && heatmapState.map) {
+    heatmapState.map.off('moveend', heatmapState._heatMoveHandler);
+  }
+  heatmapState._heatMoveHandler = null;
+}
+
 function initHeatmapMap() {
   if (heatmapState.map) return;
   heatmapState.map = L.map('heatmap-container', { preferCanvas: true }).setView([46.6, 2.5], 5);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap',
-    maxZoom: 19
-  }).addTo(heatmapState.map);
+  heatmapState.tileLayer = makeBasemapLayer(heatmapState.basemap).addTo(heatmapState.map);
 }
 
 function renderHeatmap() {
@@ -690,6 +854,7 @@ function doRenderHeatmap() {
   const slider2 = parseInt(document.getElementById('heat-radius').value, 10);
 
   if (heatmapState.layer) {
+    detachHeatZoomHandler();
     heatmapState.map.removeLayer(heatmapState.layer);
     heatmapState.layer = null;
   }
@@ -701,25 +866,31 @@ function doRenderHeatmap() {
 
   if (tracks.length > 0) {
     if (heatmapState.mode === 'heat') {
-      // Sub-sample to cap at ~60k points for perf.
-      const totalRaw = tracks.reduce((s, t) => s + t.pts.length, 0);
-      const sampleEvery = Math.max(1, Math.floor(totalRaw / 60000));
-      const points = [];
-      for (const { pts } of tracks) {
-        for (let i = 0; i < pts.length; i += sampleEvery) {
-          points.push([pts[i][0], pts[i][1], slider1]);
-          allBoundsLats.push(pts[i][0]);
-          allBoundsLngs.push(pts[i][1]);
+      // Cache each track with its bbox + length; the heat points themselves are
+      // (re)built per zoom/pan by updateHeatPoints so spacing stays ~constant in
+      // pixels (a fixed-meter spacing breaks into dots when you zoom in).
+      heatmapState.heatTracks = tracks.map(({ pts }) => {
+        let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+        for (const [la, ln] of pts) {
+          if (la < minLat) minLat = la;
+          if (la > maxLat) maxLat = la;
+          if (ln < minLng) minLng = ln;
+          if (ln > maxLng) maxLng = ln;
         }
-      }
-      pointCount = points.length;
-      heatmapState.layer = L.heatLayer(points, {
+        allBoundsLats.push(minLat, maxLat);
+        allBoundsLngs.push(minLng, maxLng);
+        return { pts, len: trackLengthM(pts), minLat, maxLat, minLng, maxLng };
+      });
+      heatmapState.statBase = { withPoly, withoutPoly };
+      heatmapState.layer = L.heatLayer([], {
         radius: slider2,
         blur: slider2 * 1.5,
         maxZoom: 17,
         max: 1.0,
         gradient: { 0.2: 'blue', 0.4: 'cyan', 0.6: 'lime', 0.8: 'yellow', 1.0: 'red' }
       }).addTo(heatmapState.map);
+      attachHeatZoomHandler();
+      updateHeatPoints();  // initial fill + point-count stat for the current zoom
     } else {
       // Lines mode: draw each polyline with low opacity, stacking creates density.
       const colorBy = heatmapState.colorBy || 'single';
@@ -757,9 +928,13 @@ function doRenderHeatmap() {
     }
   }
 
-  const stats = document.getElementById('heat-stats');
-  const noun = heatmapState.mode === 'heat' ? 'points' : 'segments';
-  stats.textContent = `${withPoly} activités tracées${withoutPoly > 0 ? ` · ${withoutPoly} sans tracé` : ''} · ${pointCount} ${noun}`;
+  // In heat mode with data, updateHeatPoints owns the stat (its point count
+  // changes with zoom). Otherwise write it here.
+  if (heatmapState.mode !== 'heat' || !heatmapState.layer) {
+    const noun = heatmapState.mode === 'heat' ? 'points' : 'segments';
+    document.getElementById('heat-stats').textContent =
+      `${withPoly} activités tracées${withoutPoly > 0 ? ` · ${withoutPoly} sans tracé` : ''} · ${pointCount} ${noun}`;
+  }
 
   heatmapState.dirty = false;
 }
@@ -1260,6 +1435,12 @@ document.getElementById('heat-palette-list').addEventListener('click', (e) => {
   const btn = e.target.closest('.heat-palette-opt');
   if (!btn) return;
   setHeatPalette(btn.dataset.palette);
+  saveUserConfig();
+});
+// Basemap (background tiles) selector.
+renderHeatBasemapOptions();
+document.getElementById('heat-basemap').addEventListener('change', (e) => {
+  setHeatBasemap(e.target.value);
   saveUserConfig();
 });
 document.addEventListener('click', (e) => {
