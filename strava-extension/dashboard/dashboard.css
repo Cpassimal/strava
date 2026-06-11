@@ -620,6 +620,15 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
   font-size: 0.85rem;
 }
 .heatmap-controls input[type="range"] { width: 140px; }
+.heatmap-controls select {
+  font-size: 0.85rem;
+  padding: 4px 8px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  background: #fff;
+  color: #1d1d1f;
+  cursor: pointer;
+}
 .heat-stats { color: #888; font-size: 0.8rem; margin-left: auto; }
 .btn-fullscreen { padding: 4px 12px; font-size: 1rem; line-height: 1; }
 
