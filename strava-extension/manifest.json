@@ -13,7 +13,10 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://www.strava.com/*"
+    "https://www.strava.com/*",
+    "https://heatmap-external-a.strava.com/*",
+    "https://heatmap-external-b.strava.com/*",
+    "https://heatmap-external-c.strava.com/*"
   ],
   "background": {
     "service_worker": "background/service-worker.js",

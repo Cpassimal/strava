@@ -198,6 +198,37 @@
       <label><strong>Fond :</strong>
         <select id="heat-basemap"></select>
       </label>
+      <div class="heat-strava" id="heat-strava">
+        <button class="btn btn-ghost btn-config" id="btn-heat-strava" title="Heatmap globale Strava (overlay)" aria-label="Heatmap Strava">🔥 Strava</button>
+        <div class="heat-config-panel" id="heat-strava-panel">
+          <div class="heat-config-title">Heatmap globale Strava</div>
+          <label class="heat-config-opt"><input type="checkbox" id="heat-strava-enabled"> Afficher en overlay</label>
+          <div class="heat-strava-sub" id="heat-strava-sub">
+            <label class="heat-strava-row">Activité
+              <select id="heat-strava-activity">
+                <option value="all">Toutes</option>
+                <option value="ride">Vélo</option>
+                <option value="run">Course</option>
+                <option value="water">Eau</option>
+                <option value="winter">Hiver</option>
+              </select>
+            </label>
+            <label class="heat-strava-row">Couleur
+              <select id="heat-strava-color">
+                <option value="hot">Hot (orange)</option>
+                <option value="blue">Bleu</option>
+                <option value="purple">Violet</option>
+                <option value="gray">Gris</option>
+                <option value="bluered">Bleu → Rouge</option>
+              </select>
+            </label>
+            <label class="heat-strava-row">Opacité
+              <input type="range" id="heat-strava-opacity" min="0.1" max="1" step="0.05" value="0.6">
+            </label>
+            <div class="heat-strava-status" id="heat-strava-status"></div>
+          </div>
+        </div>
+      </div>
       <span class="heat-stats" id="heat-stats"></span>
       <div class="heat-config" id="heat-config">
         <button class="btn btn-ghost btn-config" id="btn-heat-config" title="Options de couleur" aria-label="Options de couleur">⚙</button>

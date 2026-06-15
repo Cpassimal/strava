@@ -25,7 +25,8 @@ function saveUserConfig() {
     heatColorBy: heatmapState.colorBy,
     heatPalette: heatmapState.palette,
     heatBasemap: heatmapState.basemap,
-    heatModeValues: heatmapState.modeValues
+    heatModeValues: heatmapState.modeValues,
+    stravaOverlay: { ...heatmapState.stravaOverlay }
   };
   CONFIG_FIELDS.inputs.forEach(id => {
     config[id] = document.getElementById(id).value;
@@ -48,6 +49,10 @@ async function restoreUserConfig() {
   if (config.heatPalette) setHeatPalette(config.heatPalette, { skipRender: true });
   if (config.heatColorBy) setHeatColorBy(config.heatColorBy, { skipRender: true });
   if (config.heatBasemap) setHeatBasemap(config.heatBasemap);
+  if (config.stravaOverlay) {
+    heatmapState.stravaOverlay = { ...heatmapState.stravaOverlay, ...config.stravaOverlay };
+    reflectStravaOverlayToControls();  // map not built yet; initHeatmapMap re-applies
+  }
   if (config.heatMode) setHeatmapMode(config.heatMode, { skipSync: true });
 
   CONFIG_FIELDS.inputs.forEach(id => {
@@ -459,7 +464,17 @@ const heatmapState = {
   modeValues: {
     heat: { intensity: 0.6, radius: 6 },
     lines: { intensity: 0.6, radius: 2 }
-  }
+  },
+  // Strava global heatmap overlay (configurable tile layer above the basemap).
+  stravaOverlay: {
+    enabled: false,
+    activity: 'all',   // all | ride | run | water | winter
+    color: 'hot',      // hot | blue | purple | gray | bluered
+    opacity: 0.6
+  },
+  stravaLayer: null,      // the active L.tileLayer, or null
+  stravaParams: null,     // cached CloudFront signing query string
+  stravaParamsAt: 0       // timestamp of the cached params (TTL re-auth)
 };
 
 // Selectable background tile providers. All load as plain <img> tiles (no API
@@ -503,6 +518,220 @@ function setHeatBasemap(key) {
     heatmapState.tileLayer = makeBasemapLayer(key).addTo(heatmapState.map);
     heatmapState.tileLayer.bringToBack();  // keep tiles beneath the overlay
   }
+}
+
+// ─── Strava global heatmap overlay ───
+// Strava serves its global heatmap as authenticated raster tiles from the
+// heatmap-external-{a,b,c}.strava.com CDN, gated behind CloudFront signed
+// cookies. We read those cookies (set for the user's logged-in session) and
+// append them to each tile URL as query params, so plain <img> tiles load with
+// no per-request auth. See manifest host_permissions for the CDN subdomains.
+const STRAVA_HEAT_ACTIVITIES = { all: 'Toutes', ride: 'Vélo', run: 'Course', water: 'Eau', winter: 'Hiver' };
+const STRAVA_HEAT_COLORS = { hot: 'Hot', blue: 'Bleu', purple: 'Violet', gray: 'Gris', bluered: 'Bleu → Rouge' };
+const STRAVA_HEAT_AUTH_URL = 'https://heatmap-external-a.strava.com/auth';
+const STRAVA_HEAT_PARAMS_TTL = 30 * 60 * 1000;  // re-read params at most every 30 min
+
+function setStravaStatus(msg, isError = false) {
+  const el = document.getElementById('heat-strava-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('error', !!isError);
+}
+
+// Read the three CloudFront signing cookies Strava sets for the heatmap CDN.
+// Returns { keyPairId, policy, signature } or null if any is missing.
+// The CloudFront cookies are Domain=.strava.com, so we read them through the
+// www.strava.com URL (a host we always have permission for — reads on the CDN
+// subdomain can be withheld). We also try the CHIPS-partitioned variant keyed on
+// the strava.com top-level site, since /auth runs inside a strava.com tab and may
+// set them partitioned. First variant that yields all three wins.
+const STRAVA_COOKIE_VARIANTS = [
+  { url: 'https://www.strava.com/' },
+  { url: 'https://www.strava.com/', partitionKey: { topLevelSite: 'https://strava.com' } }
+];
+async function readStravaHeatCookies() {
+  const names = { keyPairId: 'CloudFront-Key-Pair-Id', policy: 'CloudFront-Policy', signature: 'CloudFront-Signature' };
+  for (const base of STRAVA_COOKIE_VARIANTS) {
+    try {
+      const out = {};
+      for (const [key, name] of Object.entries(names)) {
+        const c = await chrome.cookies.get({ ...base, name });
+        if (c?.value) out[key] = c.value;
+      }
+      if (out.keyPairId && out.policy && out.signature) return out;
+    } catch (_) { /* missing permission / unsupported partitionKey — try next */ }
+  }
+  return null;
+}
+
+// Trigger Strava's CDN /auth handshake, which sets the CloudFront cookies. Our
+// own request can't do it: from the extension origin the request is cross-site
+// to strava.com, so a SameSite=Strict session cookie is withheld and there's no
+// strava.com Referer (→ 401). The fix is to run /auth *inside a logged-in Strava
+// tab*: that request is same-site (sends the session cookie even when Strict)
+// and carries the right Referer. Falls back to a background-tab top-level
+// navigation if no Strava tab is open. Returns a cleanup fn or null.
+async function triggerStravaHeatAuth() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: '*://*.strava.com/*' }); } catch (_) { /* tabs perm */ }
+  const stravaTab = tabs.find(t => t.id != null);
+  if (stravaTab) {
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: stravaTab.id },
+        func: async () => {
+          try {
+            const r = await fetch('https://heatmap-external-a.strava.com/auth', { credentials: 'include' });
+            return { ok: r.ok, status: r.status, url: r.url };
+          } catch (e) { return { error: String(e) }; }
+        }
+      });
+      console.warn('[Strava heatmap] in-tab /auth result:', res?.result);
+      return null;  // injected into an existing tab — nothing to clean up
+    } catch (err) {
+      console.warn('[Strava heatmap] executeScript failed (falling back to tab):', err.message);
+    }
+  }
+  // Fallback: top-level navigation to /auth in a throwaway background tab.
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url: STRAVA_HEAT_AUTH_URL, active: false });
+  } catch (err) {
+    console.warn('[Strava heatmap] tab open failed:', err.message);
+    return null;
+  }
+  return () => { if (tab?.id != null) chrome.tabs.remove(tab.id).catch(() => {}); };
+}
+
+// Ensure we hold a fresh CloudFront query string. If the cookies are absent,
+// run the same-site auth handshake, poll until the cookies appear, then read
+// them. Returns the query string, or null if still unauthenticated. Calls are
+// de-duplicated: concurrent callers share one in-flight handshake.
+async function ensureStravaHeatParams(force = false) {
+  const st = heatmapState;
+  if (!force && st.stravaParams && (Date.now() - st.stravaParamsAt) < STRAVA_HEAT_PARAMS_TTL) {
+    return st.stravaParams;
+  }
+  if (st._stravaAuthInFlight) return st._stravaAuthInFlight;  // coalesce concurrent calls
+  st._stravaAuthInFlight = (async () => {
+    let cookies = await readStravaHeatCookies();
+    if (!cookies) {
+      setStravaStatus('Authentification Strava…');
+      const cleanup = await triggerStravaHeatAuth();
+      try {
+        // The /auth handshake sets the cookies within a moment; poll up to ~9s.
+        for (let i = 0; i < 30 && !cookies; i++) {
+          await new Promise(r => setTimeout(r, 300));
+          cookies = await readStravaHeatCookies();
+        }
+      } finally {
+        if (cleanup) cleanup();
+      }
+    }
+    if (!cookies) {
+      st.stravaParams = null;
+      // Diagnostic: list every strava.com cookie we can read (unpartitioned and
+      // partitioned), so we can see whether CloudFront-* are present at all.
+      try {
+        const plain = await chrome.cookies.getAll({ domain: 'strava.com' });
+        const part = await chrome.cookies.getAll({ domain: 'strava.com', partitionKey: { topLevelSite: 'https://strava.com' } });
+        console.warn('[Strava heatmap] auth failed. unpartitioned cookies:', plain.map(c => c.name),
+          '| partitioned cookies:', part.map(c => c.name));
+      } catch (e) {
+        console.warn('[Strava heatmap] cookie read error:', e.message);
+      }
+      return null;
+    }
+    // Cookie values are already URL-safe (CloudFront base64); concatenate raw so
+    // we don't re-encode the `~ - _` chars CloudFront expects verbatim.
+    st.stravaParams = `Key-Pair-Id=${cookies.keyPairId}&Policy=${cookies.policy}&Signature=${cookies.signature}`;
+    st.stravaParamsAt = Date.now();
+    return st.stravaParams;
+  })();
+  try {
+    return await st._stravaAuthInFlight;
+  } finally {
+    st._stravaAuthInFlight = null;
+  }
+}
+
+// Add / refresh / remove the overlay to match heatmapState.stravaOverlay.
+async function applyStravaOverlay() {
+  const map = heatmapState.map;
+  if (!map) return;  // map not built yet — initHeatmapMap will re-apply on open
+  const cfg = heatmapState.stravaOverlay;
+
+  // Drop any existing layer first (simplest correct path for option changes).
+  if (heatmapState.stravaLayer) {
+    map.removeLayer(heatmapState.stravaLayer);
+    heatmapState.stravaLayer = null;
+  }
+  if (!cfg.enabled) { setStravaStatus(''); return; }
+
+  setStravaStatus('Chargement…');
+  const params = await ensureStravaHeatParams();
+  // The user may have toggled off while we were authenticating.
+  if (!heatmapState.stravaOverlay.enabled) { setStravaStatus(''); return; }
+  if (!params) {
+    setStravaStatus('Échec de l\'authentification Strava — vérifie que tu es connecté à Strava, puis réessaie.', true);
+    return;
+  }
+
+  const url = `https://heatmap-external-{s}.strava.com/tiles-auth/${cfg.activity}/${cfg.color}/{z}/{x}/{y}.png?${params}`;
+  const layer = L.tileLayer(url, {
+    subdomains: 'abc',
+    maxNativeZoom: 15,   // Strava heatmap tiles top out ~z15; Leaflet upscales beyond
+    maxZoom: 19,
+    opacity: cfg.opacity,
+    attribution: '© Strava'
+  });
+  // Expired signing cookies surface as tile errors mid-session. Re-auth at most
+  // once per minute (globally — tiles error in bursts) and rebuild only if the
+  // params actually changed, so a persistent failure can't loop.
+  layer.on('tileerror', async () => {
+    const now = Date.now();
+    if (now - (heatmapState.stravaReauthAt || 0) < 60000) return;
+    heatmapState.stravaReauthAt = now;
+    const fresh = await ensureStravaHeatParams(true);
+    if (fresh && fresh !== params && heatmapState.stravaOverlay.enabled) applyStravaOverlay();
+  });
+  layer.addTo(map);
+  layer.setZIndex(5);  // above the basemap, below the user overlay (separate pane)
+  if (heatmapState.tileLayer) heatmapState.tileLayer.bringToBack();
+  heatmapState.stravaLayer = layer;
+  setStravaStatus(`${STRAVA_HEAT_ACTIVITIES[cfg.activity]} · ${STRAVA_HEAT_COLORS[cfg.color]}`);
+}
+
+// Push current overlay state into the toolbar controls (no map side effects).
+function reflectStravaOverlayToControls() {
+  const cfg = heatmapState.stravaOverlay;
+  const enabled = document.getElementById('heat-strava-enabled');
+  const activity = document.getElementById('heat-strava-activity');
+  const color = document.getElementById('heat-strava-color');
+  const opacity = document.getElementById('heat-strava-opacity');
+  const sub = document.getElementById('heat-strava-sub');
+  if (enabled) enabled.checked = cfg.enabled;
+  if (activity) activity.value = cfg.activity;
+  if (color) color.value = cfg.color;
+  if (opacity) opacity.value = cfg.opacity;
+  if (sub) sub.style.display = cfg.enabled ? 'block' : 'none';
+}
+
+function setStravaOverlayEnabled(on) {
+  heatmapState.stravaOverlay.enabled = on;
+  const sub = document.getElementById('heat-strava-sub');
+  if (sub) sub.style.display = on ? 'block' : 'none';
+  applyStravaOverlay();
+}
+
+function setStravaOverlayOption(key, value) {
+  heatmapState.stravaOverlay[key] = value;
+  // Opacity updates in place; activity/color need a fresh tile URL.
+  if (key === 'opacity') {
+    if (heatmapState.stravaLayer) heatmapState.stravaLayer.setOpacity(value);
+    return;
+  }
+  if (heatmapState.stravaOverlay.enabled) applyStravaOverlay();
 }
 
 // Qualitative palette for per-sport track coloring (categorical, first = Strava orange).
@@ -818,6 +1047,7 @@ function initHeatmapMap() {
   if (heatmapState.map) return;
   heatmapState.map = L.map('heatmap-container', { preferCanvas: true }).setView([46.6, 2.5], 5);
   heatmapState.tileLayer = makeBasemapLayer(heatmapState.basemap).addTo(heatmapState.map);
+  if (heatmapState.stravaOverlay.enabled) applyStravaOverlay();  // restored as enabled
 }
 
 function renderHeatmap() {
@@ -1447,6 +1677,36 @@ document.addEventListener('click', (e) => {
   const cfg = document.getElementById('heat-config');
   if (cfg && !cfg.contains(e.target)) {
     document.getElementById('heat-config-panel').classList.remove('open');
+  }
+});
+
+// Strava global heatmap overlay: own popover (cog toggles, outside-click closes),
+// available in both heat and lines modes.
+reflectStravaOverlayToControls();
+document.getElementById('btn-heat-strava').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('heat-strava-panel').classList.toggle('open');
+});
+document.getElementById('heat-strava-enabled').addEventListener('change', (e) => {
+  setStravaOverlayEnabled(e.target.checked);
+  saveUserConfig();
+});
+document.getElementById('heat-strava-activity').addEventListener('change', (e) => {
+  setStravaOverlayOption('activity', e.target.value);
+  saveUserConfig();
+});
+document.getElementById('heat-strava-color').addEventListener('change', (e) => {
+  setStravaOverlayOption('color', e.target.value);
+  saveUserConfig();
+});
+document.getElementById('heat-strava-opacity').addEventListener('input', (e) => {
+  setStravaOverlayOption('opacity', parseFloat(e.target.value));
+  saveUserConfig();
+});
+document.addEventListener('click', (e) => {
+  const box = document.getElementById('heat-strava');
+  if (box && !box.contains(e.target)) {
+    document.getElementById('heat-strava-panel').classList.remove('open');
   }
 });
 
