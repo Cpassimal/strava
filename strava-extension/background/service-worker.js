@@ -1,4 +1,4 @@
-import { authenticate, fetchActivities, backfillPolylines, backfillHrStreams, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
+import { authenticate, fetchActivities, fetchActivitiesWeb, backfillStreams, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
 import { STORAGE_KEYS } from '../lib/config.js';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -65,15 +65,30 @@ async function handleMessage(msg) {
   }
 }
 
+// A logged-in strava.com session is enough to use the cookie-based endpoints
+// (list + streams), no OAuth token required. We treat the session as usable if
+// a Strava session/remember cookie is present; the actual fetch validates it
+// and reports `session_expired` if it turns out to be logged out.
+async function hasStravaWebSession() {
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: 'strava.com' });
+    return cookies.some(c => c.name === '_strava4_session' || c.name === 'strava_remember_id');
+  } catch {
+    return false;
+  }
+}
+
 async function getStatus() {
   const stravaTokens = await getStoredTokens();
   const lastSync = (await chrome.storage.local.get(STORAGE_KEYS.LAST_SYNC))[STORAGE_KEYS.LAST_SYNC];
   const athlete = (await chrome.storage.local.get(STORAGE_KEYS.STRAVA_ATHLETE))[STORAGE_KEYS.STRAVA_ATHLETE];
   const activities = (await chrome.storage.local.get(STORAGE_KEYS.ACTIVITIES))[STORAGE_KEYS.ACTIVITIES] || [];
+  const webSession = await hasStravaWebSession();
 
   return {
     stravaConnected: !!stravaTokens.accessToken,
     stravaConfigured: !!stravaTokens.clientId && !!stravaTokens.clientSecret,
+    webSession,
     lastSync: lastSync || null,
     athlete: athlete || null,
     activityCount: activities.length
@@ -89,70 +104,95 @@ async function refreshData() {
   const existing = (await chrome.storage.local.get(STORAGE_KEYS.ACTIVITIES))[STORAGE_KEYS.ACTIVITIES] || [];
   const existingIds = new Set(existing.map(a => String(a.ID)));
 
-  let afterTimestamp = null;
-  if (existing.length > 0) {
-    const dates = existing.map(a => new Date(a.Date).getTime()).filter(t => !isNaN(t));
-    if (dates.length > 0) {
-      afterTimestamp = Math.floor(Math.max(...dates) / 1000);
-    }
-  }
-
   function broadcastProgress(step, detail) {
     chrome.runtime.sendMessage({ type: 'progress', step, detail }).catch(() => {});
   }
 
+  // 1. Fetch the activity list. Primary path is the cookie-based web endpoint
+  //    (the API is now paid). If it fails and OAuth is still configured, fall
+  //    back to the API. A failure here must NOT abort the run: we still want to
+  //    enrich the activities already imported (e.g. from the export folder).
   broadcastProgress('fetch', 'Récupération des activités Strava...');
-  const newActivities = await fetchActivities(afterTimestamp, ({ page, fetched }) => {
-    broadcastProgress('fetch', `Page ${page} — ${fetched} activités récupérées...`);
-  });
-  const toAdd = newActivities.filter(a => !existingIds.has(String(a.ID)));
-
-  const allActivities = [...existing, ...toAdd];
-
-  const missingPolyline = allActivities.filter(a => !('Map_polyline' in a)).length;
-  let backfilled = 0;
-  if (missingPolyline > 0) {
-    broadcastProgress('backfill', `Récupération des tracés (${missingPolyline} activités)...`);
-    try {
-      const res = await backfillPolylines(allActivities, ({ remaining, filled, totalNeeded }) => {
-        broadcastProgress('backfill', `Tracés: ${filled}/${totalNeeded}...`);
-      });
-      backfilled = res.filled;
-    } catch (e) {
-      console.warn('Backfill polylines failed:', e);
+  let fetched = [];
+  let listError = null;
+  try {
+    fetched = await fetchActivitiesWeb(({ page, fetched: n }) => {
+      broadcastProgress('fetch', `Page ${page} — ${n} activités récupérées...`);
+    }, existingIds);
+  } catch (e) {
+    if (e.message === 'session_expired') {
+      throw new Error('Session Strava expirée — ouvrez strava.com et reconnectez-vous, puis réessayez.');
+    }
+    console.warn('Web activity list failed, trying API fallback:', e.message);
+    listError = e;
+    const tokens = await getStoredTokens();
+    if (tokens.accessToken || (tokens.clientId && tokens.clientSecret)) {
+      try {
+        let afterTimestamp = null;
+        if (existing.length > 0) {
+          const dates = existing.map(a => new Date(a.Date).getTime()).filter(t => !isNaN(t));
+          if (dates.length > 0) afterTimestamp = Math.floor(Math.max(...dates) / 1000);
+        }
+        fetched = await fetchActivities(afterTimestamp, ({ page, fetched: n }) => {
+          broadcastProgress('fetch', `(API) Page ${page} — ${n} activités...`);
+        });
+        listError = null;
+      } catch (e2) {
+        console.warn('API activity list fallback also failed:', e2.message);
+      }
     }
   }
 
-  // Persist new activities + polyline backfill before the HR stream pass —
-  // streams take a long time on first run (~1h for 350 activities at the
-  // rate limit), so we save fast progress first.
-  if (toAdd.length > 0 || backfilled > 0) {
+  const toAdd = fetched.filter(a => !existingIds.has(String(a.ID)));
+  const allActivities = [...existing, ...toAdd];
+  console.log(`[strava] refresh: existing=${existing.length}, fetched=${fetched.length}, new=${toAdd.length}, listError=${listError?.message || 'none'}`);
+
+  if (toAdd.length > 0) {
     broadcastProgress('save', `Sauvegarde...`);
     await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities });
   }
 
-  // Backfill HR streams for ALL activities still missing them — auto on every
-  // refresh, no separate button. backfillHrStreams persists every 10 fetches
-  // and handles 429 with sleep. Long first run, near-instant after that.
-  const missingHr = allActivities.filter(a => !('FC_mediane' in a) && a.Moyenne_FC).length;
-  if (missingHr > 0) {
-    broadcastProgress('hr-stream', `FC détaillée: 0/${missingHr}...`);
+  // 2. Fetch the TRACK ONLY for the activities that are new in THIS sync. We
+  //    never touch old history — activities already in the store keep whatever
+  //    track they have (or don't). This is what makes a refresh cheap and keeps
+  //    us well under Strava's /streams rate limit. HR is NOT fetched here: it
+  //    triggered Strava's anti-abuse and got the account banned.
+  let streams = null;
+  if (toAdd.length > 0) {
+    broadcastProgress('stream', `Nouveaux tracés: 0/${toAdd.length}...`);
     try {
-      await backfillHrStreams(allActivities,
-        ({ filled, totalNeeded, waiting }) => {
-          broadcastProgress('hr-stream', waiting
-            ? `Rate limit Strava — pause ${waiting}s (${filled}/${totalNeeded})...`
-            : `FC détaillée: ${filled}/${totalNeeded}...`);
+      streams = await backfillStreams(toAdd,
+        ({ filled, totalNeeded }) => {
+          broadcastProgress('stream', `Nouveaux tracés: ${filled}/${totalNeeded}...`);
         },
-        async (acts) => { await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: acts }); }
+        // toAdd items are the same object refs held in allActivities, so mutating
+        // them updates the full list we persist here.
+        async () => { await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities }); }
       );
+      if (streams?.rateLimited) {
+        const mins = Math.ceil((streams.retryAfter || 900) / 60);
+        broadcastProgress('stream', `Limite Strava atteinte — ${streams.polyOk} tracés ajoutés. Reprise dans ~${mins} min.`);
+      }
     } catch (e) {
-      console.warn('Backfill HR streams failed:', e);
+      if (e.message === 'session_expired') {
+        throw new Error('Session Strava expirée — ouvrez strava.com et reconnectez-vous, puis réessayez.');
+      }
+      console.warn('Backfill streams failed:', e);
     }
   }
 
   const now = new Date().toISOString();
   await chrome.storage.local.set({ [STORAGE_KEYS.LAST_SYNC]: now });
 
-  return { activities: allActivities, newCount: toAdd.length, lastSync: now };
+  return {
+    activities: allActivities,
+    newCount: toAdd.length,
+    lastSync: now,
+    listError: listError?.message || null,
+    streams: streams ? {
+      polyOk: streams.polyOk || 0,
+      rateLimited: !!streams.rateLimited,
+      retryAfter: streams.retryAfter || 0
+    } : null
+  };
 }

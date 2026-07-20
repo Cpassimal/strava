@@ -2,6 +2,12 @@ export const STRAVA_API_BASE = 'https://www.strava.com/api/v3';
 export const STRAVA_AUTH_URL = 'https://www.strava.com/oauth/authorize';
 export const STRAVA_TOKEN_URL = 'https://www.strava.com/oauth/token';
 
+// Strava's own website origin. The internal web endpoints below are what
+// strava.com itself calls to render activity pages and the training log. They
+// authenticate with the logged-in session cookies (no paid API token), so the
+// extension can use them via its `cookies` + www.strava.com host permission.
+export const STRAVA_WEB_BASE = 'https://www.strava.com';
+
 export const ACTIVITY_TYPES = ['Run', 'TrailRun', 'Ride'];
 
 export const CSV_HEADERS = [

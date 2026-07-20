@@ -23,12 +23,16 @@ async function updateStatus() {
     stravaDot.className = 'status-dot connected';
     const name = status.athlete ? `${status.athlete.firstname} ${status.athlete.lastname}` : '';
     stravaStatus.textContent = `Strava: ${name || 'connecté'}`;
+  } else if (status.webSession) {
+    // Logged in on strava.com — cookie-based sync (list + streams) works without OAuth.
+    stravaDot.className = 'status-dot connected';
+    stravaStatus.textContent = 'Strava: session web active';
   } else if (status.stravaConfigured) {
     stravaDot.className = 'status-dot partial';
     stravaStatus.textContent = 'Strava: configuré, non connecté';
   } else {
     stravaDot.className = 'status-dot disconnected';
-    stravaStatus.textContent = 'Strava: non configuré';
+    stravaStatus.textContent = 'Strava: non connecté — ouvrez strava.com';
   }
 
   if (status.lastSync) {
@@ -38,7 +42,7 @@ async function updateStatus() {
     syncInfo.textContent = status.activityCount > 0 ? `${status.activityCount} activités` : 'Jamais synchronisé';
   }
 
-  btnRefresh.disabled = !status.stravaConnected;
+  btnRefresh.disabled = !(status.stravaConnected || status.webSession);
 }
 
 btnDashboard.addEventListener('click', () => {
@@ -57,10 +61,21 @@ btnRefresh.addEventListener('click', async () => {
   const result = await sendMessage({ action: 'refresh' });
   if (result.error) {
     refreshLabel.textContent = 'Erreur!';
-    setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; btnRefresh.disabled = false; }, 2000);
+    stravaStatus.textContent = result.error;
+    stravaStatus.title = result.error;
+    setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; btnRefresh.disabled = false; updateStatus(); }, 4000);
   } else {
     refreshLabel.textContent = `+${result.newCount} activités`;
-    setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; updateStatus(); }, 2000);
+    const s = result.streams;
+    if (s) {
+      if (s.rateLimited) {
+        const mins = Math.ceil((s.retryAfter || 900) / 60);
+        stravaStatus.textContent = `+${s.polyOk} tracés — limite Strava atteinte, relancez dans ~${mins} min`;
+      } else if (s.polyOk) {
+        stravaStatus.textContent = `+${s.polyOk} tracés récupérés`;
+      }
+    }
+    setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; updateStatus(); }, 4000);
   }
 });
 
