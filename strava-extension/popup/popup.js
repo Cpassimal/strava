@@ -8,8 +8,9 @@ const refreshLabel = document.getElementById('refresh-label');
 const btnTracks = document.getElementById('btn-tracks');
 const tracksLabel = document.getElementById('tracks-label');
 
-// Tracks are fetched one /streams request per activity — deliberately manual,
-// slow and capped, because bursts of those requests get the account banned.
+// Tracks cost one /streams request per activity, so this button is deliberately
+// manual and capped — bursts of those requests get the account banned. A refresh
+// only pulls tracks for its brand-new activities; this drains the backlog.
 const TRACK_BATCH = 25;
 
 function sendMessage(msg) {
@@ -74,8 +75,13 @@ btnRefresh.addEventListener('click', async () => {
     setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; btnRefresh.disabled = false; updateStatus(); }, 4000);
   } else {
     refreshLabel.textContent = `+${result.newCount} activités`;
-    if (result.missingTracks > 0) {
-      stravaStatus.textContent = `${result.missingTracks} activités sans tracé — bouton « Récupérer les tracés »`;
+    if (result.rateLimited) {
+      const mins = Math.ceil((result.retryAfter || 900) / 60);
+      stravaStatus.textContent = `+${result.polyOk} tracés — limite Strava atteinte, relancez dans ~${mins} min`;
+    } else if (result.missingTracks > 0) {
+      stravaStatus.textContent = `+${result.polyOk} tracés · ${result.missingTracks} sans tracé — bouton « Récupérer les tracés »`;
+    } else if (result.polyOk > 0) {
+      stravaStatus.textContent = `+${result.polyOk} tracés récupérés`;
     }
     setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; updateStatus(); }, 4000);
   }

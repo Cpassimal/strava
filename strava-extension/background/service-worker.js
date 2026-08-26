@@ -1,6 +1,10 @@
 import { authenticate, fetchActivities, fetchActivitiesWeb, backfillStreams, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
 import { STORAGE_KEYS } from '../lib/config.js';
 
+// How many /streams requests a refresh may issue for its brand-new activities.
+// Kept tiny so a refresh never turns into a long background batch.
+const REFRESH_TRACK_CAP = 5;
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleMessage(message).then(sendResponse).catch(err => sendResponse({ error: err.message }));
   return true; // async response
@@ -155,9 +159,30 @@ async function refreshData() {
     await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities });
   }
 
-  // A refresh fetches the LIST ONLY. Tracks are never pulled here: one
-  // /streams request per activity is what trips Strava's anti-abuse and got the
-  // account banned. Use the explicit 'syncTracks' action for that.
+  // Tracks for the activities new in THIS sync only, and at most
+  // REFRESH_TRACK_CAP of them. A refresh must stay short: bursts of /streams
+  // requests are what trip Strava's anti-abuse. Anything left over is reported
+  // as missingTracks for the explicit 'syncTracks' action to pick up.
+  let tracks = null;
+  if (toAdd.length > 0) {
+    broadcastProgress('stream', `Tracés: 0/${Math.min(toAdd.length, REFRESH_TRACK_CAP)}...`);
+    try {
+      // toAdd holds the same object refs as allActivities, so mutating them
+      // updates the list we persist.
+      tracks = await backfillStreams(toAdd,
+        ({ filled, totalNeeded }) => broadcastProgress('stream', `Tracés: ${filled}/${totalNeeded}...`),
+        async () => { await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities }); },
+        10,
+        REFRESH_TRACK_CAP
+      );
+    } catch (e) {
+      if (e.message === 'session_expired') {
+        throw new Error('Session Strava expirée — ouvrez strava.com et reconnectez-vous, puis réessayez.');
+      }
+      console.warn('Refresh track fetch failed:', e);
+    }
+  }
+
   const now = new Date().toISOString();
   await chrome.storage.local.set({ [STORAGE_KEYS.LAST_SYNC]: now });
 
@@ -166,12 +191,15 @@ async function refreshData() {
     newCount: toAdd.length,
     lastSync: now,
     listError: listError?.message || null,
+    polyOk: tracks?.polyOk || 0,
+    rateLimited: !!tracks?.rateLimited,
+    retryAfter: tracks?.retryAfter || 0,
     missingTracks: allActivities.filter(a => !('Map_polyline' in a) && !a._noGps).length
   };
 }
 
 /**
- * Explicit, user-triggered track sync — never runs as part of a refresh.
+ * Explicit, user-triggered track sync — for the backlog a refresh left behind.
  * `limit` caps how many /streams requests a single run may issue.
  */
 async function syncTracks(limit = 25) {
