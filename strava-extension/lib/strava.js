@@ -144,8 +144,8 @@ function webActivityId(m) {
 
 // Normalize one `training_activities` model to the app's activity shape.
 // `Map_polyline` is intentionally left absent so backfillStreams() fills it.
-// The web list carries no average heart rate; Moyenne_FC stays empty on this
-// path (we no longer fetch HR streams — it got the account banned).
+// The web list carries no average heart rate either; Moyenne_FC starts empty
+// and backfillStreams() fills it from the same /streams call as the track.
 function normalizeWebActivity(m) {
   const sportType = normalizeSportType(pick(m, 'sport_type', 'type', 'activity_type', 'activity_type_display_name'));
   if (!sportType) return null;
@@ -177,7 +177,7 @@ function normalizeWebActivity(m) {
     Duree: typeof movingSec === 'number' ? secondsToHMS(movingSec) : (pick(m, 'moving_time', 'elapsed_time') || ''),
     D_plus: typeof elevRaw === 'number' ? Math.round(elevRaw) : (pick(m, 'elevation_gain') || ''),
     Lien_activite: pick(m, 'activity_url') || `https://www.strava.com/activities/${id}`,
-    Moyenne_FC: '' // web list carries no average HR; only the API path fills this
+    Moyenne_FC: '' // web list carries no average HR — backfillStreams() fills it
     // Map_polyline omitted on purpose — backfillStreams() fills it from /streams.
   };
   // Hint from the list so the stream pass can skip activities with no track.
@@ -489,66 +489,152 @@ function polylineFromLatlng(latlng) {
 }
 
 /**
- * Backfill the map polyline from the cookie-authenticated /streams endpoint,
- * one request per activity.
+ * Compute robust HR stats from a normalized /streams payload.
  *
- * The web activity list has no polyline, so we fetch the latlng stream for
- * every activity still missing a track. `_noGps` hints from the list let us
- * skip activities that can't yield a track. Persists every `saveEvery`
- * activities so a long run survives interruption; handles 429 by stopping and
- * resuming on the next refresh.
+ * `Moyenne_FC` is a time-weighted mean over the samples Strava counts as
+ * moving, so it lines up with the average HR Strava displays (the `time` and
+ * `moving` streams ride along in the same request — they cost nothing extra).
+ * When those streams are absent we fall back to a plain sample mean.
  *
- * We deliberately do NOT fetch heart rate here: repeatedly requesting the
- * heartrate stream trips Strava's anti-abuse and gets the account banned. HR
- * on the API path still comes from the activity summary (no extra request).
+ * Percentiles keep the exact formula the API path used before, so scores stay
+ * comparable with activities backfilled earlier or imported from the export.
  *
- * `maxRequests` hard-caps a single run — Strava's /streams budget is roughly
- * 100 requests per 15 min, and going near it is what gets an account flagged.
- * Requests are spaced by STREAM_DELAY_MS to stay well under that rate.
+ * Returns null when the activity has no usable HR data (no sensor, manual entry).
+ */
+function hrStatsFromStreams(streams) {
+  const hr = streams.heartrate;
+  if (!Array.isArray(hr) || hr.length === 0) return null;
+
+  const time = Array.isArray(streams.time) && streams.time.length === hr.length ? streams.time : null;
+  const moving = Array.isArray(streams.moving) && streams.moving.length === hr.length ? streams.moving : null;
+
+  // Time-weighted mean: each sample weighs the seconds it covers. Ignore
+  // implausible gaps (device pauses) so one long stop can't dominate.
+  let weighted = 0, weight = 0, plainSum = 0, plainCount = 0;
+  for (let i = 0; i < hr.length; i++) {
+    const v = hr[i];
+    if (typeof v !== 'number' || !(v > 0)) continue;
+    if (moving && moving[i] === false) continue;
+    plainSum += v; plainCount++;
+    if (time) {
+      const dt = i === 0 ? 1 : time[i] - time[i - 1];
+      if (dt > 0 && dt <= 60) { weighted += v * dt; weight += dt; }
+    }
+  }
+  if (plainCount === 0) return null;
+  const mean = weight > 0 ? weighted / weight : plainSum / plainCount;
+
+  const sorted = hr.filter(v => typeof v === 'number' && v > 0).sort((a, b) => a - b);
+  const pct = p => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+
+  return {
+    Moyenne_FC: Math.round(mean),
+    FC_mediane: pct(0.50),
+    FC_p75: pct(0.75),
+    FC_p25: pct(0.25)
+  };
+}
+
+/**
+ * Backfill the map polyline AND the heart rate stats from the
+ * cookie-authenticated /streams endpoint, one request per activity.
  *
- * Activities are mutated in place. Setting `Map_polyline` to null marks
- * "tried but no data" so we don't retry forever.
+ * The web activity list carries neither a polyline nor an average HR, so both
+ * are read from the single /streams call this pass already makes: the stream
+ * types are requested together (`latlng` + `heartrate`/`time`/`moving`), which
+ * means HR costs ZERO extra requests. What got the account banned previously
+ * was a separate, uncapped HR pass over the whole history — not the HR stream
+ * itself. This pass stays capped (`maxRequests`) and paced (STREAM_DELAY_MS).
+ *
+ * An activity is picked up when it misses its track (`Map_polyline` absent,
+ * `_noGps` hint not set) or misses its HR (see `needsHr` — never tried, no
+ * average from another source, and recent enough to come from the web path).
+ * The HR condition deliberately leaves the imported history alone: those
+ * activities either already carry `Moyenne_FC` or never had a sensor.
+ *
+ * Persists every `saveEvery` activities so a long run survives interruption;
+ * handles 429 by stopping and resuming on the next refresh.
+ *
+ * Activities are mutated in place. `Map_polyline = null` / `FC_mediane = null`
+ * mark "tried but no data" so we don't retry forever.
  */
 const STREAM_DELAY_MS = 4000;      // ~15 req/min — safely under the /streams budget
 const STREAM_MAX_REQUESTS = 25;    // per run, unless the caller says otherwise
 
+const needsPolyline = a => !('Map_polyline' in a) && !a._noGps;
+
+// Activities synced through the web list (which carries no HR) start here. Older
+// entries come from the export folder or the API summary path: those that had a
+// sensor already carry `Moyenne_FC`, and those that don't never will — fetching
+// their streams would mean hundreds of pointless requests, which is precisely
+// what got the account flagged before. The web path landed on 2026-07-20.
+const WEB_ERA_START = '2026-07-01';
+
+// Never tried AND no average from another source AND recent enough to have been
+// synced by the web path.
+const needsHr = a =>
+  !('FC_mediane' in a) &&
+  !(parseFloat(a.Moyenne_FC) > 0) &&
+  String(a.Date || '') >= WEB_ERA_START;
+
+// How many activities are still waiting for a /streams pass. Exported so the
+// service worker can report the backlog without duplicating the predicates.
+export function countMissingStreams(activities) {
+  return activities.filter(a => needsPolyline(a) || needsHr(a)).length;
+}
+
 export async function backfillStreams(activities, onProgress = null, saveProgress = null, saveEvery = 10, maxRequests = STREAM_MAX_REQUESTS) {
-  const needsPoly = a => !('Map_polyline' in a) && !a._noGps;
-  // Only sync activities that are missing their TRACK (the heatmap need) — these
-  // are the newly-added ones; old activities already got tracks from the export
-  // folder.
-  const all = activities.filter(a => needsPoly(a));
+  // Newly-added activities need their track (heatmap) and/or their HR; old ones
+  // already got tracks and average HR from the export folder.
+  const all = activities.filter(a => needsPolyline(a) || needsHr(a));
   // Newest-first so the most recent gaps fill before the rate budget runs out.
   all.sort((a, b) => String(b.Date).localeCompare(String(a.Date)));
   const cap = Math.max(1, maxRequests || STREAM_MAX_REQUESTS);
   const target = all.slice(0, cap);
   const totalNeeded = target.length;
-  if (totalNeeded === 0) return { activities, filled: 0, totalNeeded: 0, remaining: 0, rateLimited: false };
+  if (totalNeeded === 0) return { activities, filled: 0, totalNeeded: 0, remaining: 0, rateLimited: false, polyOk: 0, hrOk: 0 };
 
   let filled = 0;
-  let polyOk = 0, polyNull = 0;
+  let polyOk = 0, polyNull = 0, hrOk = 0, hrNull = 0;
   let loggedSample = false;
 
   for (let i = 0; i < target.length; i++) {
     const a = target[i];
     if (onProgress) onProgress({ filled, totalNeeded, current: i + 1 });
 
+    const wantPoly = needsPolyline(a);
+    const wantHr = needsHr(a);
+    const types = [];
+    if (wantPoly) types.push('latlng');
+    // `time` and `moving` only serve the time-weighted average; they travel in
+    // the same response, so requesting them adds no request.
+    if (wantHr) types.push('heartrate', 'time', 'moving');
+
     try {
-      const raw = await fetchActivityStreams(a.ID, ['latlng']);
+      const raw = await fetchActivityStreams(a.ID, types);
       if (raw === null) {
         // 404 — activity gone/private. Mark tried so we don't retry.
-        a.Map_polyline = null; polyNull++;
+        if (wantPoly) { a.Map_polyline = null; polyNull++; }
+        if (wantHr) { a.FC_mediane = null; hrNull++; }
       } else {
         const streams = normalizeStreams(raw);
         // One-time dump of the real stream shape for verification.
         if (!loggedSample) {
           console.log(`[strava] streams sample (act ${a.ID}): keys=${JSON.stringify(Object.keys(streams))}, ` +
             `latlng.len=${Array.isArray(streams.latlng) ? streams.latlng.length : 'n/a'}, ` +
-            `latlng[0]=${JSON.stringify(streams.latlng?.[0])}`);
+            `latlng[0]=${JSON.stringify(streams.latlng?.[0])}, ` +
+            `hr.len=${Array.isArray(streams.heartrate) ? streams.heartrate.length : 'n/a'}`);
           loggedSample = true;
         }
-        a.Map_polyline = polylineFromLatlng(streams.latlng);
-        if (a.Map_polyline) polyOk++; else polyNull++;
+        if (wantPoly) {
+          a.Map_polyline = polylineFromLatlng(streams.latlng);
+          if (a.Map_polyline) polyOk++; else polyNull++;
+        }
+        if (wantHr) {
+          const stats = hrStatsFromStreams(streams);
+          if (stats) { Object.assign(a, stats); hrOk++; }
+          else { a.FC_mediane = null; hrNull++; }
+        }
       }
       filled++;
     } catch (e) {
@@ -557,13 +643,14 @@ export async function backfillStreams(activities, onProgress = null, saveProgres
         // sleep isn't reliable in an MV3 service worker (it gets killed), so we
         // save what we have and stop; the next refresh resumes newest-first.
         if (saveProgress) await saveProgress(activities);
-        console.warn(`[strava] rate limited after ${filled} fetch(es) — stopping. Retry in ~${e.retryAfter}s. polyline ok=${polyOk}`);
-        return { activities, filled, totalNeeded, remaining: all.length - filled, rateLimited: true, retryAfter: e.retryAfter, polyOk, polyNull };
+        console.warn(`[strava] rate limited after ${filled} fetch(es) — stopping. Retry in ~${e.retryAfter}s. polyline ok=${polyOk}, hr ok=${hrOk}`);
+        return { activities, filled, totalNeeded, remaining: all.length - filled, rateLimited: true, retryAfter: e.retryAfter, polyOk, polyNull, hrOk, hrNull };
       }
       if (e.message === 'session_expired') throw e; // bubble up — user must re-login on strava.com
       // Other error: mark as tried-failed to avoid hammering
       console.warn(`Stream fail for ${a.ID}:`, e.message);
-      a.Map_polyline = null;
+      if (wantPoly) a.Map_polyline = null;
+      if (wantHr) a.FC_mediane = null;
       filled++;
     }
 
@@ -577,8 +664,8 @@ export async function backfillStreams(activities, onProgress = null, saveProgres
   }
 
   if (saveProgress) await saveProgress(activities);
-  console.log(`[strava] backfillStreams done: filled=${filled}/${totalNeeded}, polyline ok=${polyOk} null=${polyNull}, remaining=${all.length - filled}`);
-  return { activities, filled, totalNeeded, remaining: all.length - filled, polyOk, polyNull };
+  console.log(`[strava] backfillStreams done: filled=${filled}/${totalNeeded}, polyline ok=${polyOk} null=${polyNull}, hr ok=${hrOk} null=${hrNull}, remaining=${all.length - filled}`);
+  return { activities, filled, totalNeeded, remaining: all.length - filled, polyOk, polyNull, hrOk, hrNull };
 }
 
 // ---------------------------------------------------------------------------

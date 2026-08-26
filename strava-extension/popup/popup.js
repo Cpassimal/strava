@@ -64,6 +64,14 @@ document.getElementById('btn-segments').addEventListener('click', () => {
   window.close();
 });
 
+// One /streams call fills both the track and the heart rate, so report both.
+function streamSummary(result) {
+  const parts = [];
+  if (result.polyOk > 0) parts.push(`+${result.polyOk} tracés`);
+  if (result.hrOk > 0) parts.push(`+${result.hrOk} FC`);
+  return parts.length ? parts.join(' · ') : 'rien de neuf';
+}
+
 btnRefresh.addEventListener('click', async () => {
   btnRefresh.disabled = true;
   refreshLabel.textContent = 'Synchronisation...';
@@ -75,13 +83,14 @@ btnRefresh.addEventListener('click', async () => {
     setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; btnRefresh.disabled = false; updateStatus(); }, 4000);
   } else {
     refreshLabel.textContent = `+${result.newCount} activités`;
+    const got = streamSummary(result);
     if (result.rateLimited) {
       const mins = Math.ceil((result.retryAfter || 900) / 60);
-      stravaStatus.textContent = `+${result.polyOk} tracés — limite Strava atteinte, relancez dans ~${mins} min`;
+      stravaStatus.textContent = `${got} — limite Strava atteinte, relancez dans ~${mins} min`;
     } else if (result.missingTracks > 0) {
-      stravaStatus.textContent = `+${result.polyOk} tracés · ${result.missingTracks} sans tracé — bouton « Récupérer les tracés »`;
-    } else if (result.polyOk > 0) {
-      stravaStatus.textContent = `+${result.polyOk} tracés récupérés`;
+      stravaStatus.textContent = `${got} · ${result.missingTracks} à compléter — bouton « Récupérer les tracés »`;
+    } else if (result.polyOk > 0 || result.hrOk > 0) {
+      stravaStatus.textContent = `${got} récupérés`;
     }
     setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; updateStatus(); }, 4000);
   }
@@ -97,13 +106,13 @@ btnTracks.addEventListener('click', async () => {
     stravaStatus.title = result.error;
   } else if (result.rateLimited) {
     const mins = Math.ceil((result.retryAfter || 900) / 60);
-    tracksLabel.textContent = `+${result.polyOk} tracés`;
+    tracksLabel.textContent = streamSummary(result);
     stravaStatus.textContent = `Limite Strava atteinte — relancez dans ~${mins} min`;
   } else {
-    tracksLabel.textContent = `+${result.polyOk} tracés`;
+    tracksLabel.textContent = streamSummary(result);
     stravaStatus.textContent = result.remaining > 0
-      ? `${result.remaining} tracés restants — relancez plus tard`
-      : 'Tous les tracés sont à jour';
+      ? `${result.remaining} activités restantes — relancez plus tard`
+      : 'Tracés et FC à jour';
   }
   setTimeout(() => { tracksLabel.textContent = 'Récupérer les tracés'; updateStatus(); }, 5000);
 });
