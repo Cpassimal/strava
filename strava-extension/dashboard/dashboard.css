@@ -683,6 +683,22 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
 .heat-palette-bar { width: 70px; height: 12px; border-radius: 3px; flex: none; }
 .heat-palette-name { font-size: 0.82rem; color: #1d1d1f; }
 
+/* Strava global heatmap overlay control (own popover, available in both modes). */
+.heat-strava { position: relative; display: inline-flex; }
+.heat-strava-sub { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid #ececf0; }
+.heat-strava-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 0.85rem;
+}
+.heat-strava-row select { width: 120px; }
+.heat-strava-row input[type="range"] { width: 120px; }
+.heat-strava-status { margin-top: 8px; font-size: 0.78rem; color: #888; line-height: 1.3; }
+.heat-strava-status.error { color: #d11a2a; }
+
 .heatmap-card { padding: 0; overflow: hidden; position: relative; }
 
 /* Legend overlay (bottom-left of the map) for sport/year coloring. */
