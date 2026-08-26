@@ -198,6 +198,9 @@ function normalizeWebActivity(m) {
  *
  * Throws Error('session_expired') if Strava redirects to login.
  */
+const LIST_PAGE_DELAY_MS = 700;
+const MAX_LIST_PAGES = 60; // safety net: ~1200 activities per run, resumable
+
 export async function fetchActivitiesWeb(onProgress = null, knownIds = null) {
   const allActivities = [];
   const perPage = 20; // the endpoint's native page size
@@ -266,8 +269,11 @@ export async function fetchActivitiesWeb(onProgress = null, knownIds = null) {
 
     // Incremental stop: newest-first, so once a full page is entirely known we
     // have reached previously-synced history — nothing new remains below.
+    // Only TRACKED types count: swims/walks are never stored, so they would
+    // otherwise look "new" forever and force a full history sweep every refresh.
     if (knownIds && knownIds.size > 0) {
       const anyNew = models.some(m => {
+        if (!normalizeSportType(pick(m, 'sport_type', 'type', 'activity_type', 'activity_type_display_name'))) return false;
         const id = webActivityId(m);
         return id !== undefined && !knownIds.has(String(id));
       });
@@ -278,7 +284,13 @@ export async function fetchActivitiesWeb(onProgress = null, knownIds = null) {
     }
 
     if (models.length < perPage) break;
+    if (page >= MAX_LIST_PAGES) {
+      console.warn(`[strava] list page cap (${MAX_LIST_PAGES}) reached — stopping`);
+      break;
+    }
     page++;
+    // Pace pagination: an uncapped full sweep is hundreds of rapid-fire hits.
+    await new Promise(r => setTimeout(r, LIST_PAGE_DELAY_MS));
   }
 
   console.log(`[strava] fetchActivitiesWeb done: kept=${kept}, dropped(type filtered)=${dropped}`);
@@ -490,19 +502,28 @@ function polylineFromLatlng(latlng) {
  * heartrate stream trips Strava's anti-abuse and gets the account banned. HR
  * on the API path still comes from the activity summary (no extra request).
  *
+ * `maxRequests` hard-caps a single run — Strava's /streams budget is roughly
+ * 100 requests per 15 min, and going near it is what gets an account flagged.
+ * Requests are spaced by STREAM_DELAY_MS to stay well under that rate.
+ *
  * Activities are mutated in place. Setting `Map_polyline` to null marks
  * "tried but no data" so we don't retry forever.
  */
-export async function backfillStreams(activities, onProgress = null, saveProgress = null, saveEvery = 10) {
+const STREAM_DELAY_MS = 4000;      // ~15 req/min — safely under the /streams budget
+const STREAM_MAX_REQUESTS = 25;    // per run, unless the caller says otherwise
+
+export async function backfillStreams(activities, onProgress = null, saveProgress = null, saveEvery = 10, maxRequests = STREAM_MAX_REQUESTS) {
   const needsPoly = a => !('Map_polyline' in a) && !a._noGps;
   // Only sync activities that are missing their TRACK (the heatmap need) — these
   // are the newly-added ones; old activities already got tracks from the export
   // folder.
-  const target = activities.filter(a => needsPoly(a));
+  const all = activities.filter(a => needsPoly(a));
   // Newest-first so the most recent gaps fill before the rate budget runs out.
-  target.sort((a, b) => String(b.Date).localeCompare(String(a.Date)));
+  all.sort((a, b) => String(b.Date).localeCompare(String(a.Date)));
+  const cap = Math.max(1, maxRequests || STREAM_MAX_REQUESTS);
+  const target = all.slice(0, cap);
   const totalNeeded = target.length;
-  if (totalNeeded === 0) return { activities, filled: 0, totalNeeded: 0, rateLimited: false };
+  if (totalNeeded === 0) return { activities, filled: 0, totalNeeded: 0, remaining: 0, rateLimited: false };
 
   let filled = 0;
   let polyOk = 0, polyNull = 0;
@@ -537,7 +558,7 @@ export async function backfillStreams(activities, onProgress = null, saveProgres
         // save what we have and stop; the next refresh resumes newest-first.
         if (saveProgress) await saveProgress(activities);
         console.warn(`[strava] rate limited after ${filled} fetch(es) — stopping. Retry in ~${e.retryAfter}s. polyline ok=${polyOk}`);
-        return { activities, filled, totalNeeded, rateLimited: true, retryAfter: e.retryAfter, polyOk, polyNull };
+        return { activities, filled, totalNeeded, remaining: all.length - filled, rateLimited: true, retryAfter: e.retryAfter, polyOk, polyNull };
       }
       if (e.message === 'session_expired') throw e; // bubble up — user must re-login on strava.com
       // Other error: mark as tried-failed to avoid hammering
@@ -550,14 +571,14 @@ export async function backfillStreams(activities, onProgress = null, saveProgres
       await saveProgress(activities);
     }
 
-    // Be polite — a first run sweeps the whole history; rapid-fire requests can
-    // trip Strava's anti-abuse before we ever see a 429.
-    await new Promise(r => setTimeout(r, 120));
+    // Pace the run — rapid-fire requests trip Strava's anti-abuse long before
+    // we ever see a 429.
+    if (i < target.length - 1) await new Promise(r => setTimeout(r, STREAM_DELAY_MS));
   }
 
   if (saveProgress) await saveProgress(activities);
-  console.log(`[strava] backfillStreams done: filled=${filled}/${totalNeeded}, polyline ok=${polyOk} null=${polyNull}`);
-  return { activities, filled, totalNeeded };
+  console.log(`[strava] backfillStreams done: filled=${filled}/${totalNeeded}, polyline ok=${polyOk} null=${polyNull}, remaining=${all.length - filled}`);
+  return { activities, filled, totalNeeded, remaining: all.length - filled, polyOk, polyNull };
 }
 
 // ---------------------------------------------------------------------------

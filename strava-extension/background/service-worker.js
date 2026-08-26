@@ -28,6 +28,9 @@ async function handleMessage(msg) {
     case 'refresh':
       return refreshData();
 
+    case 'syncTracks':
+      return syncTracks(msg.limit);
+
     case 'loadData':
       return loadData();
 
@@ -152,35 +155,9 @@ async function refreshData() {
     await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities });
   }
 
-  // 2. Fetch the TRACK ONLY for the activities that are new in THIS sync. We
-  //    never touch old history — activities already in the store keep whatever
-  //    track they have (or don't). This is what makes a refresh cheap and keeps
-  //    us well under Strava's /streams rate limit. HR is NOT fetched here: it
-  //    triggered Strava's anti-abuse and got the account banned.
-  let streams = null;
-  if (toAdd.length > 0) {
-    broadcastProgress('stream', `Nouveaux tracés: 0/${toAdd.length}...`);
-    try {
-      streams = await backfillStreams(toAdd,
-        ({ filled, totalNeeded }) => {
-          broadcastProgress('stream', `Nouveaux tracés: ${filled}/${totalNeeded}...`);
-        },
-        // toAdd items are the same object refs held in allActivities, so mutating
-        // them updates the full list we persist here.
-        async () => { await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities }); }
-      );
-      if (streams?.rateLimited) {
-        const mins = Math.ceil((streams.retryAfter || 900) / 60);
-        broadcastProgress('stream', `Limite Strava atteinte — ${streams.polyOk} tracés ajoutés. Reprise dans ~${mins} min.`);
-      }
-    } catch (e) {
-      if (e.message === 'session_expired') {
-        throw new Error('Session Strava expirée — ouvrez strava.com et reconnectez-vous, puis réessayez.');
-      }
-      console.warn('Backfill streams failed:', e);
-    }
-  }
-
+  // A refresh fetches the LIST ONLY. Tracks are never pulled here: one
+  // /streams request per activity is what trips Strava's anti-abuse and got the
+  // account banned. Use the explicit 'syncTracks' action for that.
   const now = new Date().toISOString();
   await chrome.storage.local.set({ [STORAGE_KEYS.LAST_SYNC]: now });
 
@@ -189,10 +166,41 @@ async function refreshData() {
     newCount: toAdd.length,
     lastSync: now,
     listError: listError?.message || null,
-    streams: streams ? {
-      polyOk: streams.polyOk || 0,
-      rateLimited: !!streams.rateLimited,
-      retryAfter: streams.retryAfter || 0
-    } : null
+    missingTracks: allActivities.filter(a => !('Map_polyline' in a) && !a._noGps).length
   };
+}
+
+/**
+ * Explicit, user-triggered track sync — never runs as part of a refresh.
+ * `limit` caps how many /streams requests a single run may issue.
+ */
+async function syncTracks(limit = 25) {
+  const activities = (await chrome.storage.local.get(STORAGE_KEYS.ACTIVITIES))[STORAGE_KEYS.ACTIVITIES] || [];
+  const save = async () => { await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: activities }); };
+
+  function broadcastProgress(step, detail) {
+    chrome.runtime.sendMessage({ type: 'progress', step, detail }).catch(() => {});
+  }
+
+  try {
+    const res = await backfillStreams(activities,
+      ({ filled, totalNeeded }) => broadcastProgress('stream', `Tracés: ${filled}/${totalNeeded}...`),
+      save,
+      10,
+      limit
+    );
+    return {
+      activities,
+      filled: res.filled,
+      polyOk: res.polyOk || 0,
+      remaining: res.remaining || 0,
+      rateLimited: !!res.rateLimited,
+      retryAfter: res.retryAfter || 0
+    };
+  } catch (e) {
+    if (e.message === 'session_expired') {
+      throw new Error('Session Strava expirée — ouvrez strava.com et reconnectez-vous, puis réessayez.');
+    }
+    throw e;
+  }
 }

@@ -5,6 +5,12 @@ const stravaDot = document.getElementById('strava-dot');
 const stravaStatus = document.getElementById('strava-status');
 const syncInfo = document.getElementById('sync-info');
 const refreshLabel = document.getElementById('refresh-label');
+const btnTracks = document.getElementById('btn-tracks');
+const tracksLabel = document.getElementById('tracks-label');
+
+// Tracks are fetched one /streams request per activity — deliberately manual,
+// slow and capped, because bursts of those requests get the account banned.
+const TRACK_BATCH = 25;
 
 function sendMessage(msg) {
   return new Promise((resolve) => {
@@ -42,7 +48,9 @@ async function updateStatus() {
     syncInfo.textContent = status.activityCount > 0 ? `${status.activityCount} activités` : 'Jamais synchronisé';
   }
 
-  btnRefresh.disabled = !(status.stravaConnected || status.webSession);
+  const usable = !!(status.stravaConnected || status.webSession);
+  btnRefresh.disabled = !usable;
+  btnTracks.disabled = !usable;
 }
 
 btnDashboard.addEventListener('click', () => {
@@ -66,17 +74,32 @@ btnRefresh.addEventListener('click', async () => {
     setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; btnRefresh.disabled = false; updateStatus(); }, 4000);
   } else {
     refreshLabel.textContent = `+${result.newCount} activités`;
-    const s = result.streams;
-    if (s) {
-      if (s.rateLimited) {
-        const mins = Math.ceil((s.retryAfter || 900) / 60);
-        stravaStatus.textContent = `+${s.polyOk} tracés — limite Strava atteinte, relancez dans ~${mins} min`;
-      } else if (s.polyOk) {
-        stravaStatus.textContent = `+${s.polyOk} tracés récupérés`;
-      }
+    if (result.missingTracks > 0) {
+      stravaStatus.textContent = `${result.missingTracks} activités sans tracé — bouton « Récupérer les tracés »`;
     }
     setTimeout(() => { refreshLabel.textContent = 'Rafraîchir'; updateStatus(); }, 4000);
   }
+});
+
+btnTracks.addEventListener('click', async () => {
+  btnTracks.disabled = true;
+  tracksLabel.textContent = 'Tracés...';
+  const result = await sendMessage({ action: 'syncTracks', limit: TRACK_BATCH });
+  if (result.error) {
+    tracksLabel.textContent = 'Erreur!';
+    stravaStatus.textContent = result.error;
+    stravaStatus.title = result.error;
+  } else if (result.rateLimited) {
+    const mins = Math.ceil((result.retryAfter || 900) / 60);
+    tracksLabel.textContent = `+${result.polyOk} tracés`;
+    stravaStatus.textContent = `Limite Strava atteinte — relancez dans ~${mins} min`;
+  } else {
+    tracksLabel.textContent = `+${result.polyOk} tracés`;
+    stravaStatus.textContent = result.remaining > 0
+      ? `${result.remaining} tracés restants — relancez plus tard`
+      : 'Tous les tracés sont à jour';
+  }
+  setTimeout(() => { tracksLabel.textContent = 'Récupérer les tracés'; updateStatus(); }, 5000);
 });
 
 btnSettings.addEventListener('click', () => {
