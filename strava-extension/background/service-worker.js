@@ -1,4 +1,4 @@
-import { authenticate, fetchActivities, fetchActivitiesWeb, backfillStreams, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
+import { authenticate, fetchActivities, fetchActivitiesWeb, backfillStreams, countMissingStreams, disconnectStrava, getStoredTokens, ensureValidToken } from '../lib/strava.js';
 import { STORAGE_KEYS } from '../lib/config.js';
 
 // How many /streams requests a refresh may issue for its brand-new activities.
@@ -159,10 +159,11 @@ async function refreshData() {
     await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVITIES]: allActivities });
   }
 
-  // Tracks for the activities new in THIS sync only, and at most
-  // REFRESH_TRACK_CAP of them. A refresh must stay short: bursts of /streams
-  // requests are what trip Strava's anti-abuse. Anything left over is reported
-  // as missingTracks for the explicit 'syncTracks' action to pick up.
+  // Tracks and heart rate for the activities new in THIS sync only (one
+  // /streams call each covers both), and at most REFRESH_TRACK_CAP of them.
+  // A refresh must stay short: bursts of /streams requests are what trip
+  // Strava's anti-abuse. Anything left over is reported as missingTracks for
+  // the explicit 'syncTracks' action to pick up.
   let tracks = null;
   if (toAdd.length > 0) {
     broadcastProgress('stream', `Tracés: 0/${Math.min(toAdd.length, REFRESH_TRACK_CAP)}...`);
@@ -192,9 +193,10 @@ async function refreshData() {
     lastSync: now,
     listError: listError?.message || null,
     polyOk: tracks?.polyOk || 0,
+    hrOk: tracks?.hrOk || 0,
     rateLimited: !!tracks?.rateLimited,
     retryAfter: tracks?.retryAfter || 0,
-    missingTracks: allActivities.filter(a => !('Map_polyline' in a) && !a._noGps).length
+    missingTracks: countMissingStreams(allActivities)
   };
 }
 
@@ -221,6 +223,7 @@ async function syncTracks(limit = 25) {
       activities,
       filled: res.filled,
       polyOk: res.polyOk || 0,
+      hrOk: res.hrOk || 0,
       remaining: res.remaining || 0,
       rateLimited: !!res.rateLimited,
       retryAfter: res.retryAfter || 0
