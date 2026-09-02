@@ -127,6 +127,12 @@
     <div class="chart-section">
       <div class="card chart-box" id="c1" style="display:none;">
         <div class="chart-options">
+          <label><input type="checkbox" id="perf-avg" checked> Moyenne</label>
+          <label><input type="checkbox" id="perf-median"> Médiane</label>
+          <label><input type="checkbox" id="perf-min"> Min</label>
+          <label><input type="checkbox" id="perf-max"> Max</label>
+          <label><input type="checkbox" id="perf-range"> Étendue min–max</label>
+          <label><input type="checkbox" id="perf-iqr"> Bande P25–P75</label>
           <label><input type="checkbox" id="zero-perf"> Min 0</label>
         </div>
         <canvas id="perfChart"></canvas>
