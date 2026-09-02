@@ -221,7 +221,7 @@
       <tr><th>Graphique</th><th>Données</th><th>Type</th></tr>
     </thead>
     <tbody>
-      <tr><td>Performance</td><td>Score de perf moyen par période</td><td>Ligne</td></tr>
+      <tr><td>Performance</td><td>Statistiques du score de perf par période (moyenne, médiane, min, max, dispersion)</td><td>Ligne</td></tr>
       <tr><td>Charge</td><td>Charge cumulée par période</td><td>Barre</td></tr>
       <tr><td>Distance & Dénivelé</td><td>Distance (axe gauche) et D+ (axe droit) par période</td><td>Barre double axe</td></tr>
       <tr><td>Volume & Fréquence</td><td>Heures (barres) et nombre d'activités (ligne) par période</td><td>Mixte</td></tr>
@@ -229,6 +229,23 @@
   </table>
 
   <p>L'option "Min 0" force l'axe Y à démarrer à zéro. L'option "Tendances" ajoute une courbe de tendance lissée sur chaque graphique.</p>
+
+  <h3>Graphique Performance : séries configurables</h3>
+  <p>Chaque période agrège plusieurs activités : le graphique peut afficher, au choix, différentes statistiques de cette distribution pour visualiser la variabilité.</p>
+  <table>
+    <thead>
+      <tr><th>Série</th><th>Signification</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Moyenne</td><td>Score moyen de la période (comportement historique)</td></tr>
+      <tr><td>Médiane</td><td>Score central : moins sensible aux sorties atypiques que la moyenne</td></tr>
+      <tr><td>Min / Max</td><td>Sorties la plus faible et la plus forte de la période</td></tr>
+      <tr><td>Étendue min–max</td><td>Zone ombrée entre min et max : amplitude totale de la période</td></tr>
+      <tr><td>Bande P25–P75</td><td>Zone ombrée contenant la moitié centrale des sorties : dispersion "typique", sans les extrêmes</td></tr>
+    </tbody>
+  </table>
+  <p>Le survol d'un point affiche aussi le nombre d'activités de la période, l'écart-type et l'étendue. La courbe de tendance suit la moyenne si elle est affichée, sinon la médiane.</p>
+  <p>Les périodes sans activité (ou dont toutes les activités sont exclues) valent 0 sur toutes ces séries.</p>
 
 </div>
 

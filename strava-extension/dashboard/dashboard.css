@@ -226,12 +226,18 @@ header h1 { color: #1d1d1f; font-size: 1.8rem; }
 }
 .chart-options {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 4px 14px;
   padding: 5px 10px 0 0;
 }
 .chart-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.8em;
   color: #666;
+  cursor: pointer;
 }
 
 /* Settings Modal */

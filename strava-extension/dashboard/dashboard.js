@@ -12,7 +12,8 @@ const USER_CONFIG_KEY = 'user_config';
 // ─── User Config ───
 const CONFIG_FIELDS = {
   inputs: ['date-min', 'dist-min', 'dist-max', 'elev-min', 'elev-max', 'fc-repos', 'fc-max', 'hr-exponent'],
-  checkboxes: ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge']
+  checkboxes: ['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge',
+    'perf-avg', 'perf-median', 'perf-min', 'perf-max', 'perf-range', 'perf-iqr']
 };
 
 function saveUserConfig() {
@@ -376,6 +377,29 @@ function renderHrCell(a) {
     none: ''
   }[state];
   return `${Math.round(mean)} bpm ${dot}`;
+}
+
+// Descriptive stats for a numeric series; null when empty.
+function seriesStats(values) {
+  if (!values || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const quantile = p => {
+    const idx = (sorted.length - 1) * p;
+    const lo = Math.floor(idx), hi = Math.ceil(idx);
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+  };
+  const mean = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+  const variance = sorted.reduce((a, b) => a + (b - mean) ** 2, 0) / sorted.length;
+  return {
+    n: sorted.length,
+    mean,
+    median: quantile(0.5),
+    p25: quantile(0.25),
+    p75: quantile(0.75),
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+    sd: Math.sqrt(variance)
+  };
 }
 
 function computePerformanceScore(dist, elev, hours, hrEffort, hrExp, fallbackHrEffort) {
@@ -1082,6 +1106,10 @@ function renderActivitiesTable() {
 }
 
 // ─── Dashboard update ───
+function emptyPeriod() {
+  return { dist: 0, elev: 0, hours: 0, count: 0, chargeSum: 0, scores: [] };
+}
+
 function updateDashboard() {
   saveUserConfig();
   const minVal = document.getElementById('date-min').value;
@@ -1128,7 +1156,7 @@ function updateDashboard() {
     const key = getWindowKey(date);
 
     if (!groupedData[key]) {
-      groupedData[key] = { dist: 0, elev: 0, hours: 0, count: 0, perfSum: 0, perfCount: 0, chargeSum: 0 };
+      groupedData[key] = emptyPeriod();
     }
 
     // Always count for totals
@@ -1151,8 +1179,7 @@ function updateDashboard() {
     // Only count for score if not excluded
     if (!excluded) {
       const score = computePerformanceScore(dist, elev, hours, hrEffort, hrExp, fallbackHrEffort);
-      groupedData[key].perfSum += score;
-      groupedData[key].perfCount += 1;
+      groupedData[key].scores.push(score);
       totalPerfScore += score;
       countForScore++;
     }
@@ -1165,31 +1192,18 @@ function updateDashboard() {
   document.getElementById('kpi-score').textContent = countForScore > 0 ? (totalPerfScore / countForScore).toFixed(1) : '0';
   document.getElementById('kpi-avg-charge').textContent = totalCount > 0 ? (totalCharge / totalCount).toFixed(1) : '0';
 
-  // Median distance
-  allDistances.sort((a, b) => a - b);
-  const median = allDistances.length > 0
-    ? (allDistances.length % 2 === 0
-      ? (allDistances[allDistances.length / 2 - 1] + allDistances[allDistances.length / 2]) / 2
-      : allDistances[Math.floor(allDistances.length / 2)])
-    : 0;
+  const median = seriesStats(allDistances)?.median || 0;
   document.getElementById('kpi-median-dist').textContent = median > 0 ? median.toFixed(1) + ' km' : '-';
 
-  // Median D+
-  allElevations.sort((a, b) => a - b);
-  const medianElev = allElevations.length > 0
-    ? (allElevations.length % 2 === 0
-      ? (allElevations[allElevations.length / 2 - 1] + allElevations[allElevations.length / 2]) / 2
-      : allElevations[Math.floor(allElevations.length / 2)])
-    : 0;
+  const medianElev = seriesStats(allElevations)?.median || 0;
   document.getElementById('kpi-median-elev').textContent = medianElev > 0 ? Math.round(medianElev) + ' m' : '-';
 
   // Fill empty periods between first and last keys
   const existingKeys = Object.keys(groupedData).sort();
   if (existingKeys.length >= 2) {
-    const emptyPeriod = { dist: 0, elev: 0, hours: 0, count: 0, perfSum: 0, perfCount: 0, chargeSum: 0 };
     const allPeriodKeys = generatePeriodKeys(existingKeys[0], existingKeys[existingKeys.length - 1], currentWindow);
     allPeriodKeys.forEach(k => {
-      if (!groupedData[k]) groupedData[k] = { ...emptyPeriod };
+      if (!groupedData[k]) groupedData[k] = emptyPeriod();
     });
   }
   const sortedKeys = Object.keys(groupedData).sort();
@@ -1256,22 +1270,70 @@ function renderCharts(labels, data) {
 
   function safeNum(v) { return isFinite(v) ? v : 0; }
 
-  // 1. Performance
-  const perfData = labels.map(w => safeNum(data[w].perfCount > 0 ? data[w].perfSum / data[w].perfCount : 0).toFixed(1));
-  const perfDatasets = [{
-    label: 'Indice de Performance',
-    data: perfData,
-    borderColor: '#fc4c02',
-    backgroundColor: 'rgba(252, 76, 2, 0.1)',
-    fill: true, tension: 0.3
-  }];
-  if (showTrend) {
+  // 1. Performance — mean / median / min / max + variability bands, all toggleable
+  const perfStats = labels.map(w => seriesStats(data[w].scores));
+  const perfSeries = pick => perfStats.map(st => safeNum(st ? pick(st) : 0).toFixed(1));
+  const perfOpt = id => document.getElementById(id).checked;
+
+  const showRange = perfOpt('perf-range');
+  const showIqr = perfOpt('perf-iqr');
+  const perfDatasets = [];
+
+  // Bands come first so the lines draw on top of them.
+  if (showRange) {
+    perfDatasets.push(
+      { label: 'Étendue min–max', data: perfSeries(st => st.min), borderWidth: 0, pointRadius: 0, fill: false, tension: 0.3, order: 6, hideInLegend: true },
+      { label: 'Étendue min–max', data: perfSeries(st => st.max), borderWidth: 0, pointRadius: 0, backgroundColor: 'rgba(252, 76, 2, 0.10)', fill: '-1', tension: 0.3, order: 6 }
+    );
+  }
+  if (showIqr) {
+    perfDatasets.push(
+      { label: 'Bande P25–P75', data: perfSeries(st => st.p25), borderWidth: 0, pointRadius: 0, fill: false, tension: 0.3, order: 5, hideInLegend: true },
+      { label: 'Bande P25–P75', data: perfSeries(st => st.p75), borderWidth: 0, pointRadius: 0, backgroundColor: 'rgba(252, 76, 2, 0.22)', fill: '-1', tension: 0.3, order: 5 }
+    );
+  }
+  if (perfOpt('perf-max')) {
     perfDatasets.push({
-      label: 'Tendance',
-      data: getMovingAverage(perfData),
-      borderColor: 'rgba(252, 76, 2, 0.5)',
-      borderDash: [5, 5], pointRadius: 0, fill: false, tension: 0.3
+      label: 'Max', data: perfSeries(st => st.max),
+      borderColor: '#ff375f', borderWidth: 1.5, borderDash: [4, 4],
+      pointRadius: 0, fill: false, tension: 0.3, order: 3
     });
+  }
+  if (perfOpt('perf-min')) {
+    perfDatasets.push({
+      label: 'Min', data: perfSeries(st => st.min),
+      borderColor: '#30b45c', borderWidth: 1.5, borderDash: [4, 4],
+      pointRadius: 0, fill: false, tension: 0.3, order: 3
+    });
+  }
+  const perfMedian = perfSeries(st => st.median);
+  if (perfOpt('perf-median')) {
+    perfDatasets.push({
+      label: 'Médiane', data: perfMedian,
+      borderColor: '#007aff', borderWidth: 2,
+      pointRadius: 2, fill: false, tension: 0.3, order: 2
+    });
+  }
+  const perfMean = perfSeries(st => st.mean);
+  if (perfOpt('perf-avg')) {
+    perfDatasets.push({
+      label: 'Moyenne', data: perfMean,
+      borderColor: '#fc4c02', borderWidth: 2,
+      backgroundColor: 'rgba(252, 76, 2, 0.1)',
+      // Filling the mean would hide the bands underneath.
+      fill: !showRange && !showIqr, tension: 0.3, order: 1
+    });
+  }
+  if (showTrend) {
+    const trendBase = perfOpt('perf-avg') ? perfMean : (perfOpt('perf-median') ? perfMedian : null);
+    if (trendBase) {
+      perfDatasets.push({
+        label: 'Tendance',
+        data: getMovingAverage(trendBase),
+        borderColor: 'rgba(252, 76, 2, 0.5)',
+        borderDash: [5, 5], pointRadius: 0, fill: false, tension: 0.3, order: 0
+      });
+    }
   }
 
   charts.perf = new Chart(document.getElementById('perfChart'), {
@@ -1279,7 +1341,21 @@ function renderCharts(labels, data) {
     data: { labels, datasets: perfDatasets },
     options: {
       ...options,
-      plugins: { ...options.plugins, title: { display: true, text: 'Performance par ' + windowLabels[currentWindow] } },
+      plugins: {
+        ...options.plugins,
+        title: { display: true, text: 'Performance par ' + windowLabels[currentWindow] },
+        // One legend entry per band: the lower bound is only there as a fill target.
+        legend: { position: 'bottom', labels: { filter: (item, chartData) => !chartData.datasets[item.datasetIndex].hideInLegend } },
+        tooltip: {
+          callbacks: {
+            footer: items => {
+              const st = perfStats[items[0].dataIndex];
+              if (!st) return 'Aucune activité';
+              return `n = ${st.n} · écart-type = ${st.sd.toFixed(1)} · étendue = ${(st.max - st.min).toFixed(1)}`;
+            }
+          }
+        }
+      },
       scales: { y: { min: document.getElementById('zero-perf').checked ? 0 : undefined } }
     }
   });
@@ -1396,7 +1472,7 @@ document.querySelectorAll('#window-selector .type-pill').forEach(pill => {
   document.getElementById(id).addEventListener('change', updateDashboard);
 });
 
-['show-trend', 'zero-perf', 'zero-dist', 'zero-vol', 'zero-charge'].forEach(id => {
+CONFIG_FIELDS.checkboxes.forEach(id => {
   document.getElementById(id).addEventListener('change', updateDashboard);
 });
 
